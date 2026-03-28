@@ -1,0 +1,54 @@
+{
+  "appName": "TorrentSearch Apple TV",
+  "environment": "lan",
+  "server": {
+    "lanIp": "192.168.1.8",
+    "apiPort": 8790,
+    "webPort": 8789,
+    "apiBaseUrl": "http://192.168.1.8:8790",
+    "webUrl": "http://192.168.1.8:8789/"
+  },
+  "endpoints": {
+    "health": "/api/v1/health",
+    "system": "/api/v1/system",
+    "search": "/api/v1/search",
+    "queueDownload": "/api/v1/downloads",
+    "downloadStatus": "/api/v1/downloads/{gid}"
+  },
+  "requests": {
+    "searchQueryParam": "q",
+    "queueDownloadPreferredBody": {
+      "resultId": "<resultId>"
+    },
+    "queueDownloadFallbackBodyKeys": [
+      "sourceUrl",
+      "downloadUrl",
+      "magnetUri"
+    ]
+  },
+  "polling": {
+    "downloadStatusIntervalSeconds": 2,
+    "healthCheckOnLaunch": true
+  },
+  "responseFields": {
+    "searchResultId": "resultId",
+    "searchItems": "items",
+    "downloadQueueId": "gid",
+    "downloadStatusRoot": "download",
+    "downloadEffectiveId": "gid",
+    "downloadRequestedId": "requestedGid",
+    "downloadState": "state",
+    "downloadName": "name",
+    "downloadDirectory": "directory",
+    "downloadPrimaryPath": "primaryPath",
+    "downloadFollowedBy": "followedBy",
+    "downloadMetadataGid": "metadataGid"
+  },
+  "notes": {
+    "authentication": "No API auth is currently required on the trusted LAN.",
+    "downloader": "aria2",
+    "downloadDirectory": "C:\\Users\\arnyb\\Downloads",
+    "magnetBehavior": "Magnet downloads may start as a metadata task and later switch to a content gid.",
+    "uiHint": "Expose lanIp in settings and rebuild apiBaseUrl and webUrl from lanIp, apiPort, and webPort when the user changes it."
+  }
+}
