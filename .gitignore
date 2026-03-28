@@ -2,10 +2,38 @@ config.local.json
 downloads/
 aria2-1.37.0-win-64bit-build1/
 __pycache__/
+*.py[cod]
 *.zip
+*.log
+*.swp
+*.swo
+*~
+
+# Local environment files
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Python virtualenvs and tool caches
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
 
 # macOS
 .DS_Store
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Editor settings
+.idea/
+.vscode/
 
 # Xcode / Swift / tvOS
 DerivedData/
