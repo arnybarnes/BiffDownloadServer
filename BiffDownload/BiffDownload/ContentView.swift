@@ -9,6 +9,8 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var connectionModel = ServerConnectionViewModel()
+    @StateObject private var flowModel = DownloadFlowViewModel()
+    @State private var showingSearch = false
 
     var body: some View {
         NavigationStack {
@@ -39,15 +41,29 @@ struct ContentView: View {
                     .padding(28)
                     .background(AppCardBackground())
 
-                    NavigationLink {
-                        ConnectionView(connectionModel: connectionModel)
-                    } label: {
-                        Label("Connection", systemImage: "network")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
+                    HStack(spacing: 20) {
+                        Button {
+                            configureFlowModel()
+                            showingSearch = true
+                        } label: {
+                            Label("Search", systemImage: "magnifyingglass")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(!connectionModel.isConnected)
+
+                        NavigationLink {
+                            ConnectionView(connectionModel: connectionModel)
+                        } label: {
+                            Label("Connection", systemImage: "network")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
 
                     Spacer()
                 }
@@ -56,9 +72,62 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .navigationBarHidden(true)
+            .fullScreenCover(isPresented: $showingSearch) {
+                DownloadFlowContainerView(viewModel: flowModel, dismiss: {
+                    showingSearch = false
+                })
+            }
         }
         .task {
             await connectionModel.connectOnLaunchIfNeeded()
+        }
+    }
+
+    private func configureFlowModel() {
+        if let baseURL = connectionModel.resolvedAPIBaseURL {
+            let interval = TimeInterval(loadPollingInterval())
+            flowModel.configure(baseURL: baseURL, pollingInterval: interval)
+        }
+        flowModel.newSearch()
+    }
+
+    private func loadPollingInterval() -> Int {
+        let loader = AppConfigLoader()
+        if let loaded = try? loader.load() {
+            return loaded.config.polling.downloadStatusIntervalSeconds
+        }
+        return 2
+    }
+}
+
+// MARK: - Flow Container
+
+struct DownloadFlowContainerView: View {
+    @ObservedObject var viewModel: DownloadFlowViewModel
+    let dismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                switch viewModel.flowStep {
+                case .search:
+                    SearchView(viewModel: viewModel)
+                case .results:
+                    SearchResultsView(viewModel: viewModel)
+                case .downloading:
+                    DownloadStatusView(viewModel: viewModel)
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        viewModel.cancelAndReset()
+                        dismiss()
+                    } label: {
+                        Label("Close", systemImage: "xmark")
+                    }
+                }
+            }
         }
     }
 }

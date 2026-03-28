@@ -22,6 +22,7 @@ final class ServerConnectionViewModel: ObservableObject {
     @Published private(set) var connectedIPAddress: String?
     @Published private(set) var connectedHost: String?
     @Published private(set) var resolvedAPIBaseURLString: String?
+    @Published private(set) var resolvedAPIBaseURL: URL?
     @Published private(set) var statusTitle = "Loading configuration"
     @Published private(set) var statusMessage = "Looking for a bundled app config."
     @Published private(set) var lastError: String?
@@ -96,6 +97,7 @@ final class ServerConnectionViewModel: ObservableObject {
             connectedIPAddress = nil
             connectedHost = nil
             resolvedAPIBaseURLString = nil
+            resolvedAPIBaseURL = nil
             lastCheckedAt = Date()
             return
         }
@@ -109,6 +111,7 @@ final class ServerConnectionViewModel: ObservableObject {
         connectedIPAddress = nil
         connectedHost = nil
         resolvedAPIBaseURLString = nil
+        resolvedAPIBaseURL = nil
         statusTitle = "Resolving server"
         statusMessage = candidates.isEmpty
             ? "No hostname or IP candidates were found in the config."
@@ -125,6 +128,7 @@ final class ServerConnectionViewModel: ObservableObject {
                 connectedIPAddress = resolvedServer.connectedIPAddress
                 connectedHost = resolvedServer.connectedHost
                 resolvedAPIBaseURLString = resolvedServer.apiBaseURL.absoluteString
+                resolvedAPIBaseURL = resolvedServer.apiBaseURL
                 statusTitle = "Connected"
                 statusMessage = "Connected to \(resolvedServer.connectedHost)."
                 return

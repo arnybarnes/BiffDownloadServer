@@ -1,0 +1,10 @@
+We are a building an app that will use the API_SPEC doc to do the following:
+
+1) Search for a video with an input screen/field. By default, the search will append "1080p" and "x265" but the user could backspace remove
+2) call the api to search
+3) show the search results
+4) let the user pick one of the results
+5) show the user the download status after picking one
+6) cancel at any time during the process with a button
+
+Come up with an design and we will go from there. It can span multiple screens or whatever you find best for a TV OS app.
