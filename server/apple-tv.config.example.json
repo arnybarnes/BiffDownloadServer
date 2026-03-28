@@ -1,7 +1,13 @@
 {
-  "appName": "TorrentSearch Apple TV",
+  "appName": "BiffDownload Apple TV",
   "environment": "lan",
   "server": {
+    "name": "DESKTOP-SB0Q7M3",
+    "hostname": "DESKTOP-SB0Q7M3",
+    "hostnameCandidates": [
+      "DESKTOP-SB0Q7M3.local",
+      "DESKTOP-SB0Q7M3"
+    ],
     "lanIp": "192.168.1.8",
     "apiPort": 8790,
     "webPort": 8789,
@@ -48,6 +54,7 @@
     "authentication": "No API auth is currently required on the trusted LAN.",
     "downloader": "aria2",
     "downloadDirectory": "C:\\Users\\arnyb\\Downloads",
+    "hostnameDiscovery": "Automatic hostname discovery only works if the Apple TV can resolve the server name on your LAN, usually via Bonjour/mDNS or local DNS.",
     "magnetBehavior": "Magnet downloads may start as a metadata task and later switch to a content gid.",
     "uiHint": "Expose lanIp in settings and rebuild apiBaseUrl and webUrl from lanIp, apiPort, and webPort when the user changes it."
   }

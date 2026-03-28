@@ -1,4 +1,5 @@
 config.local.json
+apple-tv.config.local.json
 downloads/
 aria2-1.37.0-win-64bit-build1/
 __pycache__/
