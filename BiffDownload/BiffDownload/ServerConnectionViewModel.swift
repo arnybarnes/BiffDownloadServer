@@ -16,6 +16,8 @@ final class ServerConnectionViewModel: ObservableObject {
     @Published private(set) var serverName = "Not configured"
     @Published private(set) var discoverySummary = "No server hosts configured"
     @Published private(set) var fallbackIPAddress = "Not configured"
+    @Published private(set) var bundledFallbackIPAddress = "Not configured"
+    @Published private(set) var ipOverrideStatus = "Using bundled config IP"
     @Published private(set) var isConnected = false
     @Published private(set) var connectedIPAddress: String?
     @Published private(set) var connectedHost: String?
@@ -29,11 +31,14 @@ final class ServerConnectionViewModel: ObservableObject {
 
     private let loader: AppConfigLoader
     private let session: URLSession
+    private let userDefaults: UserDefaults
+    private let manualIPAddressDefaultsKey = "BiffDownload.manualIPAddressOverride"
     private var loadedConfig: LoadedAppConfig?
     private var hasAttemptedLaunchConnection = false
 
     init() {
         loader = AppConfigLoader()
+        userDefaults = .standard
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 3
@@ -96,7 +101,7 @@ final class ServerConnectionViewModel: ObservableObject {
         }
 
         let config = loadedConfig.config
-        let candidates = config.server.connectionCandidates
+        let candidates = connectionCandidates(for: config.server)
 
         isConnecting = true
         lastError = nil
@@ -135,16 +140,7 @@ final class ServerConnectionViewModel: ObservableObject {
         do {
             let loadedConfig = try loader.load()
             self.loadedConfig = loadedConfig
-
-            let config = loadedConfig.config
-            appName = config.appName
-            configSourceLabel = loadedConfig.source.displayName
-            serverName = config.server.name ?? config.server.hostname ?? config.server.lanIp ?? "Not configured"
-            discoverySummary = config.server.connectionCandidates.isEmpty
-                ? "No server hosts configured"
-                : config.server.connectionCandidates.joined(separator: " -> ")
-            fallbackIPAddress = config.server.lanIp ?? "Not configured"
-            canConnect = !config.server.connectionCandidates.isEmpty
+            refreshConfigDisplay()
             statusTitle = "Configuration loaded"
             statusMessage = "Using \(loadedConfig.source.displayName) for LAN server discovery."
             lastError = nil
@@ -155,11 +151,30 @@ final class ServerConnectionViewModel: ObservableObject {
             serverName = "Not configured"
             discoverySummary = "No server hosts configured"
             fallbackIPAddress = "Not configured"
+            bundledFallbackIPAddress = "Not configured"
+            ipOverrideStatus = "Using bundled config IP"
             isConnected = false
             statusTitle = "Configuration missing"
             statusMessage = "Add apple-tv.config.local.json to the app bundle to override the example config."
             lastError = error.localizedDescription
         }
+    }
+
+    func currentIPAddressOctets() -> [String] {
+        let ipAddress = effectiveFallbackIPAddress() ?? ""
+        let octets = ipAddress.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+
+        guard octets.count == 4 else {
+            return ["", "", "", ""]
+        }
+
+        return octets
+    }
+
+    func setManualIPAddress(_ ipAddress: String) {
+        let normalizedIPAddress = ipAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        userDefaults.set(normalizedIPAddress, forKey: manualIPAddressDefaultsKey)
+        refreshConfigDisplay()
     }
 
     private func probeServer(host: String, config: AppConfig) async -> ResolvedServer? {
@@ -185,6 +200,89 @@ final class ServerConnectionViewModel: ObservableObject {
             )
         } catch {
             return nil
+        }
+    }
+
+    private func refreshConfigDisplay() {
+        guard let loadedConfig else {
+            return
+        }
+
+        let config = loadedConfig.config
+        let connectionCandidates = connectionCandidates(for: config.server)
+        let savedIPAddressOverride = manualIPAddressOverride()
+
+        appName = config.appName
+        configSourceLabel = loadedConfig.source.displayName
+        serverName = config.server.name ?? config.server.hostname ?? config.server.lanIp ?? "Not configured"
+        discoverySummary = connectionCandidates.isEmpty
+            ? "No server hosts configured"
+            : connectionCandidates.joined(separator: " -> ")
+        bundledFallbackIPAddress = config.server.lanIp ?? "Not configured"
+        fallbackIPAddress = effectiveFallbackIPAddress(for: config.server) ?? "Not configured"
+        ipOverrideStatus = savedIPAddressOverride.map { "Custom override saved: \($0)" } ?? "Using bundled config IP"
+        canConnect = !connectionCandidates.isEmpty
+    }
+
+    private func connectionCandidates(for server: AppConfig.Server) -> [String] {
+        var seen = Set<String>()
+        var candidates: [String] = []
+
+        func append(_ value: String?) {
+            guard let rawValue = value?.trimmingCharacters(in: .whitespacesAndNewlines), !rawValue.isEmpty else {
+                return
+            }
+
+            let normalizedValue = rawValue.lowercased()
+            guard seen.insert(normalizedValue).inserted else {
+                return
+            }
+
+            candidates.append(rawValue)
+        }
+
+        server.hostnameCandidates?.forEach(append)
+        append(server.hostname)
+        append(manualIPAddressOverride() ?? server.lanIp)
+
+        let apiBaseHost = URL(string: server.apiBaseUrl ?? "")?.host
+        if manualIPAddressOverride() == nil || apiBaseHost != server.lanIp {
+            append(apiBaseHost)
+        }
+
+        return candidates
+    }
+
+    private func effectiveFallbackIPAddress(for server: AppConfig.Server? = nil) -> String? {
+        if let manualIPAddressOverride = manualIPAddressOverride() {
+            return manualIPAddressOverride
+        }
+
+        return server?.lanIp ?? loadedConfig?.config.server.lanIp
+    }
+
+    private func manualIPAddressOverride() -> String? {
+        guard let rawIPAddress = userDefaults.string(forKey: manualIPAddressDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              isIPv4Address(rawIPAddress) else {
+            return nil
+        }
+
+        return rawIPAddress
+    }
+
+    private func isIPv4Address(_ value: String) -> Bool {
+        let components = value.split(separator: ".")
+        guard components.count == 4 else {
+            return false
+        }
+
+        return components.allSatisfy { component in
+            guard let octet = Int(component), (0...255).contains(octet) else {
+                return false
+            }
+
+            return String(octet) == component || (octet == 0 && component == "0")
         }
     }
 }
