@@ -298,6 +298,7 @@
           </div>
           <div class="button-row">
             <button id="check-health" type="button">Check Health</button>
+            <button id="restart-system" type="button" class="warning">Restart Local Stack</button>
           </div>
           <div class="meta">
             <span class="pill" id="provider-pill">Provider: unknown</span>
@@ -381,6 +382,7 @@
     const healthPill = document.getElementById("health-pill");
     const healthStatus = document.getElementById("health-status");
     const checkHealthButton = document.getElementById("check-health");
+    const restartSystemButton = document.getElementById("restart-system");
     const ipPill = document.getElementById("ip-pill");
     const lanApiPill = document.getElementById("lan-api-pill");
 
@@ -555,12 +557,45 @@
         const data = await response.json();
         const preferredIp = data.system?.preferredLanIp || "unknown";
         const lanUrl = data.system?.api?.lanUrl || "unknown";
+        const restartSupported = Boolean(data.system?.restartSupported);
         ipPill.textContent = `LAN IP: ${preferredIp}`;
         lanApiPill.textContent = `LAN API: ${lanUrl}`;
+        restartSystemButton.disabled = !restartSupported;
+        restartSystemButton.textContent = restartSupported ? "Restart Local Stack" : "Restart Unavailable";
       } catch (error) {
         ipPill.textContent = "LAN IP: unknown";
         lanApiPill.textContent = "LAN API: unknown";
+        restartSystemButton.disabled = true;
+        restartSystemButton.textContent = "Restart Unavailable";
       }
+    }
+
+    async function restartSystem() {
+      const confirmed = window.confirm("Restart the local web app, API, and aria2 stack?");
+      if (!confirmed) return;
+
+      setBusy(restartSystemButton, true, "Restarting...", "Restart Local Stack");
+      healthStatus.textContent = "Scheduling local restart...";
+      try {
+        const response = await fetch(apiUrl("/api/v1/system/restart"), {
+          method: "POST"
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.message || data.error || "Restart failed");
+        }
+
+        healthStatus.textContent = `${data.message} The page may disconnect for a few seconds while services come back.`;
+      } catch (error) {
+        healthStatus.textContent = `Restart failed: ${error.message}`;
+        setBusy(restartSystemButton, false, "Restarting...", "Restart Local Stack");
+        return;
+      }
+
+      window.setTimeout(() => {
+        setBusy(restartSystemButton, false, "Restarting...", "Restart Local Stack");
+        checkHealth();
+      }, 8000);
     }
 
     async function queueDownload(resultId, title, button) {
@@ -658,6 +693,7 @@
     });
 
     checkHealthButton.addEventListener("click", checkHealth);
+    restartSystemButton.addEventListener("click", restartSystem);
     pollButton.addEventListener("click", pollDownloadStatus);
     autoPollButton.addEventListener("click", toggleAutoPoll);
 

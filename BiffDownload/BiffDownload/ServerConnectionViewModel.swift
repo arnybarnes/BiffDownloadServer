@@ -29,6 +29,11 @@ final class ServerConnectionViewModel: ObservableObject {
     @Published private(set) var lastCheckedAt: Date?
     @Published private(set) var isConnecting = false
     @Published private(set) var canConnect = false
+    @Published private(set) var restartSupported = false
+    @Published private(set) var isCheckingHealth = false
+    @Published private(set) var healthResult: String?
+    @Published private(set) var isRestarting = false
+    @Published private(set) var restartResult: String?
 
     private let loader: AppConfigLoader
     private let session: URLSession
@@ -112,6 +117,9 @@ final class ServerConnectionViewModel: ObservableObject {
         connectedHost = nil
         resolvedAPIBaseURLString = nil
         resolvedAPIBaseURL = nil
+        restartSupported = false
+        healthResult = nil
+        restartResult = nil
         statusTitle = "Resolving server"
         statusMessage = candidates.isEmpty
             ? "No hostname or IP candidates were found in the config."
@@ -181,6 +189,74 @@ final class ServerConnectionViewModel: ObservableObject {
         refreshConfigDisplay()
     }
 
+    func checkHealth() async {
+        guard let loadedConfig, let resolvedAPIBaseURL else {
+            healthResult = "Not connected to a server."
+            return
+        }
+
+        let config = loadedConfig.config
+        guard let host = resolvedAPIBaseURL.host,
+              let healthURL = config.server.apiURL(for: host, endpointPath: config.endpoints.health) else {
+            healthResult = "Could not build health URL."
+            return
+        }
+
+        isCheckingHealth = true
+        healthResult = nil
+        defer { isCheckingHealth = false }
+
+        do {
+            let (data, response) = try await session.data(from: healthURL)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode) else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                healthResult = "Health check failed (HTTP \(code))."
+                return
+            }
+
+            let payload = try JSONDecoder().decode(HealthResponse.self, from: data)
+            let providerStatus = payload.provider.map { "\($0.name ?? "unknown") \($0.configured == true ? "ok" : "not configured")" } ?? "n/a"
+            let downloaderStatus = payload.downloader.map { "\($0.name ?? "unknown") \($0.configured == true ? "ok" : "not configured")" } ?? "n/a"
+            healthResult = "Status: \(payload.status ?? "ok") — Provider: \(providerStatus) — Downloader: \(downloaderStatus)"
+        } catch {
+            healthResult = "Health check error: \(error.localizedDescription)"
+        }
+    }
+
+    func restartServer() async {
+        guard let loadedConfig, let resolvedAPIBaseURL else {
+            restartResult = "Not connected to a server."
+            return
+        }
+
+        let config = loadedConfig.config
+        guard let host = resolvedAPIBaseURL.host,
+              let restartURL = config.server.apiURL(for: host, endpointPath: config.endpoints.restart) else {
+            restartResult = "Could not build restart URL."
+            return
+        }
+
+        isRestarting = true
+        restartResult = nil
+        defer { isRestarting = false }
+
+        do {
+            var request = URLRequest(url: restartURL)
+            request.httpMethod = "POST"
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+
+            if let payload = try? JSONDecoder().decode(RestartResponse.self, from: data) {
+                restartResult = "(\(code)) \(payload.message ?? payload.status ?? "Restart requested.")"
+            } else {
+                restartResult = code == 202 ? "Restart scheduled." : "Restart request returned HTTP \(code)."
+            }
+        } catch {
+            restartResult = "Restart error: \(error.localizedDescription)"
+        }
+    }
+
     private func probeServer(host: String, config: AppConfig) async -> ResolvedServer? {
         guard let systemURL = config.server.apiURL(for: host, endpointPath: config.endpoints.system),
               let apiBaseURL = config.server.apiBaseURL(for: host) else {
@@ -196,6 +272,7 @@ final class ServerConnectionViewModel: ObservableObject {
 
             let payload = try JSONDecoder().decode(SystemResponse.self, from: data)
             let connectedIPAddress = payload.connectedIPAddress(fallbackHost: host)
+            restartSupported = payload.system.restartSupported ?? false
 
             return ResolvedServer(
                 connectedHost: host,
@@ -297,6 +374,22 @@ private struct ResolvedServer {
     let apiBaseURL: URL
 }
 
+private struct HealthResponse: Decodable {
+    struct ComponentStatus: Decodable {
+        let name: String?
+        let configured: Bool?
+    }
+
+    let status: String?
+    let provider: ComponentStatus?
+    let downloader: ComponentStatus?
+}
+
+private struct RestartResponse: Decodable {
+    let status: String?
+    let message: String?
+}
+
 private struct SystemResponse: Decodable {
     struct SystemPayload: Decodable {
         struct APIPayload: Decodable {
@@ -306,6 +399,7 @@ private struct SystemResponse: Decodable {
         let hostname: String?
         let lanIPv4: [String]?
         let preferredLanIp: String?
+        let restartSupported: Bool?
         let api: APIPayload?
     }
 

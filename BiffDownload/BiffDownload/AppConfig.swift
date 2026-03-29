@@ -78,9 +78,24 @@ struct AppConfig: Decodable {
     struct Endpoints: Decodable {
         let health: String
         let system: String
+        let restart: String
         let search: String
         let queueDownload: String
         let downloadStatus: String
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            health = try container.decode(String.self, forKey: .health)
+            system = try container.decode(String.self, forKey: .system)
+            restart = try container.decodeIfPresent(String.self, forKey: .restart) ?? "/api/v1/system/restart"
+            search = try container.decode(String.self, forKey: .search)
+            queueDownload = try container.decode(String.self, forKey: .queueDownload)
+            downloadStatus = try container.decode(String.self, forKey: .downloadStatus)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case health, system, restart, search, queueDownload, downloadStatus
+        }
     }
 
     struct Polling: Decodable {

@@ -17,6 +17,7 @@
   "endpoints": {
     "health": "/api/v1/health",
     "system": "/api/v1/system",
+    "restart": "/api/v1/system/restart",
     "search": "/api/v1/search",
     "queueDownload": "/api/v1/downloads",
     "downloadStatus": "/api/v1/downloads/{gid}"

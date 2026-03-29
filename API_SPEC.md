@@ -81,6 +81,7 @@ Example response:
       "192.168.1.8"
     ],
     "preferredLanIp": "192.168.1.8",
+    "restartSupported": true,
     "web": {
       "host": "127.0.0.1",
       "port": 8789,
@@ -95,6 +96,32 @@ Example response:
   }
 }
 ```
+
+### `POST /api/v1/system/restart`
+
+Schedules the same local restart flow used by `start-local.ps1`.
+
+Behavior:
+
+- Windows-only
+- Launches `start-local.ps1` in a detached process
+- That script stops listeners on the web, API, and aria2 ports, then starts the stack again
+- The current API request should return before the local services are recycled
+
+Example response:
+
+```json
+{
+  "status": "restarting",
+  "message": "Local restart scheduled via start-local.ps1."
+}
+```
+
+Status codes:
+
+- `202 Accepted` when restart was scheduled
+- `500 Internal Server Error` if the restart process could not be launched
+- `501 Not Implemented` if restart is unavailable on the current host
 
 ### `GET /api/v1/search?q=<query>`
 
@@ -290,3 +317,4 @@ Notes for client:
 - `GET /api/v1/search` returns `400 Bad Request` if `q` is missing
 - `POST /api/v1/downloads` returns `400 Bad Request` for invalid JSON or when none of `resultId`, `sourceUrl`, `downloadUrl`, or `magnetUri` is provided
 - `GET /api/v1/downloads/{gid}` returns `502 Bad Gateway` if aria2 is unreachable or returns an error
+- `POST /api/v1/system/restart` returns `501 Not Implemented` when the local restart script is unavailable or the host is not Windows

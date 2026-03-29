@@ -24,6 +24,9 @@ final class DownloadFlowViewModel: ObservableObject {
 
     @Published var searchText = ""
     @Published var appendSuffix = true
+    @Published var appendEpisode = false
+    @Published var seasonNumber = 1
+    @Published var episodeNumber = 1
     private let suffix = " 1080p x265"
     @Published private(set) var isSearching = false
     @Published private(set) var searchResults: [SearchResult] = []
@@ -52,8 +55,21 @@ final class DownloadFlowViewModel: ObservableObject {
 
     var isConfigured: Bool { apiService != nil }
 
+    var episodeTag: String {
+        let s = String(format: "%02d", seasonNumber)
+        let e = String(format: "%02d", episodeNumber)
+        return "s\(s)e\(e)"
+    }
+
     var fullQuery: String {
-        appendSuffix ? searchText + suffix : searchText
+        var query = searchText
+        if appendEpisode {
+            query += " \(episodeTag)"
+        }
+        if appendSuffix {
+            query += suffix
+        }
+        return query
     }
 
     // MARK: - Search

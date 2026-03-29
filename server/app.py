@@ -1,7 +1,10 @@
 import json
 import os
 import socket
+import subprocess
+import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -16,6 +19,7 @@ from uuid import uuid4
 ROOT = Path(__file__).parent
 WEB_DIR = ROOT / "web"
 CONFIG_PATH = ROOT / "config.local.json"
+START_LOCAL_SCRIPT = ROOT / "start-local.ps1"
 SEARCH_RESULT_CACHE: dict[str, str] = {}
 
 
@@ -472,6 +476,7 @@ def build_api_v1_system_payload() -> dict[str, Any]:
             "hostname": socket.gethostname(),
             "lanIPv4": addresses,
             "preferredLanIp": preferred_ip,
+            "restartSupported": START_LOCAL_SCRIPT.exists(),
             "web": {
                 "host": web_host,
                 "port": web_port,
@@ -485,6 +490,38 @@ def build_api_v1_system_payload() -> dict[str, Any]:
             },
         },
     }
+
+
+def launch_start_local_script() -> None:
+    if not START_LOCAL_SCRIPT.exists():
+        raise FileNotFoundError(f"Restart script not found: {START_LOCAL_SCRIPT}")
+
+    creation_flags = 0
+    for flag_name in ("CREATE_NEW_PROCESS_GROUP", "DETACHED_PROCESS"):
+        creation_flags |= getattr(subprocess, flag_name, 0)
+
+    subprocess.Popen(
+        [
+            "powershell",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(START_LOCAL_SCRIPT),
+        ],
+        cwd=str(ROOT),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creation_flags,
+    )
+
+
+def schedule_local_restart(delay_seconds: float = 0.75) -> None:
+    def restart_worker() -> None:
+        time.sleep(delay_seconds)
+        launch_start_local_script()
+
+    threading.Thread(target=restart_worker, daemon=True).start()
 
 
 def build_api_v1_search_payload(query: str) -> dict[str, Any]:
@@ -579,6 +616,43 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/v1/system/restart":
+            if os.name != "nt":
+                json_response(
+                    self,
+                    HTTPStatus.NOT_IMPLEMENTED,
+                    {"error": "Restart is only implemented for the local Windows launcher."},
+                )
+                return
+
+            if not START_LOCAL_SCRIPT.exists():
+                json_response(
+                    self,
+                    HTTPStatus.NOT_IMPLEMENTED,
+                    {"error": f"Restart script not found: {START_LOCAL_SCRIPT.name}"},
+                )
+                return
+
+            try:
+                schedule_local_restart()
+            except OSError as exc:
+                json_response(
+                    self,
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": f"Could not schedule restart: {exc}"},
+                )
+                return
+
+            json_response(
+                self,
+                HTTPStatus.ACCEPTED,
+                {
+                    "status": "restarting",
+                    "message": "Local restart scheduled via start-local.ps1.",
+                },
+            )
+            return
+
         if parsed.path != "/api/v1/downloads":
             json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return

@@ -36,7 +36,7 @@ struct ConnectionView: View {
     }
 
     private var statusBar: some View {
-        HStack(alignment: .center, spacing: 24) {
+        VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .center, spacing: 14) {
                 Image(systemName: connectionModel.statusSymbolName)
                     .font(.title2.weight(.semibold))
@@ -61,20 +61,59 @@ struct ConnectionView: View {
                 }
             }
 
-            Spacer(minLength: 24)
-
-            Button {
-                Task {
-                    await connectionModel.refreshConnection()
+            HStack(spacing: 16) {
+                Button {
+                    Task {
+                        await connectionModel.refreshConnection()
+                    }
+                } label: {
+                    Label(connectionModel.isConnecting ? "Checking..." : "Reconnect", systemImage: "arrow.clockwise")
+                        .font(.headline)
+                        .frame(minWidth: 200)
                 }
-            } label: {
-                Label(connectionModel.isConnecting ? "Checking..." : "Reconnect", systemImage: "arrow.clockwise")
-                    .font(.headline)
-                    .frame(minWidth: 230)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(connectionModel.isConnecting || !connectionModel.canConnect)
+
+                Button {
+                    Task {
+                        await connectionModel.checkHealth()
+                    }
+                } label: {
+                    Label(connectionModel.isCheckingHealth ? "Checking..." : "Health Check", systemImage: "heart.text.square")
+                        .font(.headline)
+                        .frame(minWidth: 200)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!connectionModel.isConnected || connectionModel.isCheckingHealth)
+
+                Button {
+                    Task {
+                        await connectionModel.restartServer()
+                    }
+                } label: {
+                    Label(connectionModel.isRestarting ? "Restarting..." : "Restart Server", systemImage: "arrow.trianglehead.2.counterclockwise")
+                        .font(.headline)
+                        .frame(minWidth: 200)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(.orange)
+                .disabled(!connectionModel.canConnect || connectionModel.isRestarting)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(connectionModel.isConnecting || !connectionModel.canConnect)
+
+            if let healthResult = connectionModel.healthResult {
+                Text(healthResult)
+                    .font(.footnote)
+                    .foregroundStyle(Color.white.opacity(0.76))
+            }
+
+            if let restartResult = connectionModel.restartResult {
+                Text(restartResult)
+                    .font(.footnote)
+                    .foregroundStyle(Color.white.opacity(0.76))
+            }
         }
         .padding(24)
         .background(AppCardBackground())

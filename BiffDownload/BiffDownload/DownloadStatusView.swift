@@ -7,6 +7,7 @@ import SwiftUI
 
 struct DownloadStatusView: View {
     @ObservedObject var viewModel: DownloadFlowViewModel
+    @State private var metadataStartDate: Date?
 
     var body: some View {
         ZStack {
@@ -81,6 +82,18 @@ struct DownloadStatusView: View {
             .padding(.vertical, 56)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear {
+            if viewModel.downloadInfo?.isMetadataPhase == true && metadataStartDate == nil {
+                metadataStartDate = Date()
+            }
+        }
+        .onChange(of: viewModel.downloadInfo?.isMetadataPhase) { isMetadata in
+            if isMetadata == true && metadataStartDate == nil {
+                metadataStartDate = Date()
+            } else if isMetadata != true {
+                metadataStartDate = nil
+            }
+        }
     }
 
     private func downloadCard(info: DownloadInfo) -> some View {
@@ -105,9 +118,12 @@ struct DownloadStatusView: View {
             if info.isMetadataPhase {
                 HStack(spacing: 10) {
                     ProgressView().tint(.white)
-                    Text("Resolving metadata…")
-                        .font(.body)
-                        .foregroundStyle(Color.white.opacity(0.72))
+                    TimelineView(.periodic(from: metadataStartDate ?? .now, by: 1)) { context in
+                        let elapsed = Int(context.date.timeIntervalSince(metadataStartDate ?? context.date))
+                        Text("Resolving metadata… (\(elapsed)s)")
+                            .font(.body)
+                            .foregroundStyle(Color.white.opacity(0.72))
+                    }
                 }
             } else if !info.isComplete && !info.isError {
                 VStack(alignment: .leading, spacing: 10) {

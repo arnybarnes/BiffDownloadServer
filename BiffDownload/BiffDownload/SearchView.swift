@@ -39,6 +39,57 @@ struct SearchView: View {
                         )
                         .focused($isSearchFieldFocused)
 
+                    Toggle("Append episode", isOn: $viewModel.appendEpisode)
+                        .font(.body)
+
+                    if viewModel.appendEpisode {
+                        HStack(spacing: 24) {
+                            HStack(spacing: 10) {
+                                Text("Season")
+                                    .font(.body)
+                                    .foregroundStyle(Color.white.opacity(0.72))
+                                Button {
+                                    if viewModel.seasonNumber > 1 { viewModel.seasonNumber -= 1 }
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .disabled(viewModel.seasonNumber <= 1)
+
+                                Text("\(viewModel.seasonNumber)")
+                                    .font(.headline)
+                                    .frame(minWidth: 40)
+
+                                Button {
+                                    viewModel.seasonNumber += 1
+                                } label: {
+                                    Image(systemName: "plus.circle")
+                                }
+                            }
+
+                            HStack(spacing: 10) {
+                                Text("Episode")
+                                    .font(.body)
+                                    .foregroundStyle(Color.white.opacity(0.72))
+                                Button {
+                                    if viewModel.episodeNumber > 1 { viewModel.episodeNumber -= 1 }
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .disabled(viewModel.episodeNumber <= 1)
+
+                                Text("\(viewModel.episodeNumber)")
+                                    .font(.headline)
+                                    .frame(minWidth: 40)
+
+                                Button {
+                                    viewModel.episodeNumber += 1
+                                } label: {
+                                    Image(systemName: "plus.circle")
+                                }
+                            }
+                        }
+                    }
+
                     Toggle("Append 1080p x265", isOn: $viewModel.appendSuffix)
                         .font(.body)
 
