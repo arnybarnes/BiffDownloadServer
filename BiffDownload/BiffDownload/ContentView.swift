@@ -17,6 +17,15 @@ struct ContentView: View {
             ZStack {
                 AppBackgroundView()
 
+                Image("AppLogo")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxHeight: 500)
+                    .opacity(0.08)
+                    .offset(x: 180, y: 40)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .allowsHitTesting(false)
+
                 VStack(alignment: .leading, spacing: 28) {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(connectionModel.appName)

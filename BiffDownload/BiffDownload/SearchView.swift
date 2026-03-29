@@ -39,22 +39,8 @@ struct SearchView: View {
                         )
                         .focused($isSearchFieldFocused)
 
-                    HStack(spacing: 14) {
-                        Text("Default suffix:")
-                            .font(.body)
-                            .foregroundStyle(Color.white.opacity(0.60))
-
-                        TextField("suffix", text: $viewModel.defaultSuffix)
-                            .textFieldStyle(.plain)
-                            .font(.body)
-                            .padding(.vertical, 12)
-                            .padding(.horizontal, 16)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(.white.opacity(0.08))
-                            )
-                            .frame(maxWidth: 300)
-                    }
+                    Toggle("Append 1080p x265", isOn: $viewModel.appendSuffix)
+                        .font(.body)
 
                     if !viewModel.fullQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text("Will search: \(viewModel.fullQuery)")

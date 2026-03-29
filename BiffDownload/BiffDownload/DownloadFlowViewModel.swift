@@ -23,7 +23,8 @@ final class DownloadFlowViewModel: ObservableObject {
     // MARK: - Search
 
     @Published var searchText = ""
-    @Published var defaultSuffix = " 1080p x265"
+    @Published var appendSuffix = true
+    private let suffix = " 1080p x265"
     @Published private(set) var isSearching = false
     @Published private(set) var searchResults: [SearchResult] = []
     @Published private(set) var searchMessage: String?
@@ -52,7 +53,7 @@ final class DownloadFlowViewModel: ObservableObject {
     var isConfigured: Bool { apiService != nil }
 
     var fullQuery: String {
-        searchText + defaultSuffix
+        appendSuffix ? searchText + suffix : searchText
     }
 
     // MARK: - Search
