@@ -95,6 +95,20 @@ struct DownloadInfo: Decodable {
         return "\(formatter.string(fromByteCount: speed))/s"
     }
 
+    var estimatedTimeRemaining: String {
+        guard let totalBytes, totalBytes > 0,
+              let completedBytes,
+              let speed = downloadSpeedBytesPerSecond, speed > 0 else { return "—" }
+        let remaining = totalBytes - completedBytes
+        guard remaining > 0 else { return "0s" }
+        let seconds = Int(remaining / speed)
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
+        let h = seconds / 3600
+        let m = (seconds % 3600) / 60
+        return "\(h)h \(m)m"
+    }
+
     var formattedProgress: String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file

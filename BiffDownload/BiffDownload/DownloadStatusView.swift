@@ -128,6 +128,12 @@ struct DownloadStatusView: View {
 
                         Spacer()
 
+                        Text(info.estimatedTimeRemaining)
+                            .font(.subheadline)
+                            .foregroundStyle(Color.white.opacity(0.72))
+
+                        Spacer()
+
                         Text("\(Int(info.progress * 100))%")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.white)

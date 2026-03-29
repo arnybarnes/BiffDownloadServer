@@ -11,6 +11,7 @@ struct ContentView: View {
     @StateObject private var connectionModel = ServerConnectionViewModel()
     @StateObject private var flowModel = DownloadFlowViewModel()
     @State private var showingSearch = false
+    @Namespace private var searchButton
 
     var body: some View {
         NavigationStack {
@@ -20,10 +21,9 @@ struct ContentView: View {
                 Image("AppLogo")
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(maxHeight: 500)
                     .opacity(0.08)
-                    .offset(x: 180, y: 40)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .padding(40)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .allowsHitTesting(false)
 
                 VStack(alignment: .leading, spacing: 28) {
@@ -52,16 +52,27 @@ struct ContentView: View {
 
                     HStack(spacing: 20) {
                         Button {
+                            guard connectionModel.isConnected else { return }
                             configureFlowModel()
                             showingSearch = true
                         } label: {
-                            Label("Search", systemImage: "magnifyingglass")
-                                .font(.headline)
-                                .frame(maxWidth: .infinity)
+                            HStack(spacing: 10) {
+                                if connectionModel.isConnecting {
+                                    ProgressView()
+                                        .tint(.white)
+                                }
+                                Label(
+                                    connectionModel.isConnecting ? "Connecting…" : "Search",
+                                    systemImage: connectionModel.isConnecting ? "dot.radiowaves.left.and.right" : "magnifyingglass"
+                                )
+                            }
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .opacity(connectionModel.isConnected || connectionModel.isConnecting ? 1.0 : 0.4)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
-                        .disabled(!connectionModel.isConnected)
+                        .prefersDefaultFocus(in: searchButton)
 
                         NavigationLink {
                             ConnectionView(connectionModel: connectionModel)
@@ -80,6 +91,7 @@ struct ContentView: View {
                 .padding(.vertical, 56)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .focusScope(searchButton)
             .navigationBarHidden(true)
             .fullScreenCover(isPresented: $showingSearch) {
                 DownloadFlowContainerView(viewModel: flowModel, dismiss: {

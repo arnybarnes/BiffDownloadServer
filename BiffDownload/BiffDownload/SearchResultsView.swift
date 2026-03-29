@@ -82,6 +82,7 @@ struct SearchResultsView: View {
 
 private struct SearchResultRow: View {
     let result: SearchResult
+    @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         HStack(alignment: .center, spacing: 20) {
@@ -114,7 +115,16 @@ private struct SearchResultRow: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppCardBackground())
+        .background(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(isFocused ? Color.black.opacity(0.60) : Color.white.opacity(0.10))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .stroke(.white.opacity(isFocused ? 0.20 : 0.10), lineWidth: 1)
+                }
+        )
+        .scaleEffect(isFocused ? 1.02 : 1.0)
+        .animation(.easeInOut(duration: 0.15), value: isFocused)
     }
 
     private func label(icon: String, text: String) -> some View {
