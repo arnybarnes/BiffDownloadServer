@@ -35,6 +35,7 @@ This is acceptable only for a trusted LAN during development.
 
 - The current downloader is `aria2`
 - Downloads are stored in `C:\Users\arnyb\Downloads`
+- The Apple TV client can request either the default root or an existing immediate subfolder under that root
 - The API returns the effective aria2 download directory and primary file path in download status responses
 
 ## Endpoints
@@ -169,6 +170,42 @@ Legacy compatibility:
 
 - `GET /api/search?q=<query>` also exists and returns the raw provider search payload
 
+### `GET /api/v1/download-folders`
+
+Returns the default download root plus existing folder choices exactly one level deep.
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "root": "C:\\Users\\arnyb\\Downloads",
+  "count": 3,
+  "folders": [
+    {
+      "key": "",
+      "name": "Default",
+      "relativePath": "",
+      "absolutePath": "C:\\Users\\arnyb\\Downloads",
+      "isDefault": true
+    },
+    {
+      "key": "Movies",
+      "name": "Movies",
+      "relativePath": "Movies",
+      "absolutePath": "C:\\Users\\arnyb\\Downloads\\Movies",
+      "isDefault": false
+    }
+  ]
+}
+```
+
+Notes for client:
+
+- Use `key` as the value to send back in `POST /api/v1/downloads`
+- The server only accepts the default root or an existing immediate child folder
+- The server does not create new folders through this endpoint
+
 ### `POST /api/v1/downloads`
 
 Queues a selected torrent in the configured downloader.
@@ -179,6 +216,8 @@ Accepted JSON body fields:
 - `sourceUrl`
 - `downloadUrl`
 - `magnetUri`
+- `folder`
+- `fileName`
 
 At least one is required.
 
@@ -186,7 +225,9 @@ Example request:
 
 ```json
 {
-  "resultId": "1b9d9bd9d61f4e2f9bbca8ce6ff6fd7f"
+  "resultId": "1b9d9bd9d61f4e2f9bbca8ce6ff6fd7f",
+  "folder": "Movies",
+  "fileName": "Movie Night"
 }
 ```
 
@@ -197,7 +238,9 @@ Example response:
   "status": "ok",
   "message": "Download queued.",
   "downloader": "aria2",
-  "gid": "2089b05ecca3d829"
+  "gid": "2089b05ecca3d829",
+  "directory": "C:\\Users\\arnyb\\Downloads\\Movies",
+  "fileName": "Movie Night.mkv"
 }
 ```
 
@@ -206,6 +249,15 @@ Status codes:
 - `202 Accepted` when queued successfully
 - `400 Bad Request` for missing or invalid body
 - `502 Bad Gateway` when the downloader is unavailable or returns an error
+
+Notes for client:
+
+- Omit `folder` or send an empty string to use the default download root
+- `folder` must match one of the `key` values returned by `GET /api/v1/download-folders`
+- `fileName` is optional and must be a single Windows file name fragment, not a path
+- If `fileName` has no extension, the API uses the chosen video file extension when available, otherwise it defaults to `.mkv`
+- For BitTorrent items, the API waits until the torrent file list is known, then applies the rename to the selected video file if possible
+- For multi-file torrents, the API keeps only the largest `.mkv` or `.mp4` file and discards the rest from the requested download
 
 ### `GET /api/v1/downloads/{gid}`
 
@@ -231,7 +283,22 @@ Example response:
     "metadataGid": "2089b05ecca3d829",
     "followedBy": [
       "7532af166cc96d59"
-    ]
+    ],
+    "fileSelection": {
+      "state": "applied",
+      "message": "Largest video file locked in for download.",
+      "selectedFile": {
+        "index": "3",
+        "name": "Movie.2026.2160p.mkv",
+        "path": "C:\\Users\\arnyb\\Downloads\\Movie Pack\\Movie.2026.2160p.mkv",
+        "sizeBytes": 12884901888
+      },
+      "renameTarget": {
+        "requestedName": "Movie Night",
+        "fileName": "Movie Night.mkv",
+        "appliesToIndex": "3"
+      }
+    }
   }
 }
 ```
@@ -248,6 +315,8 @@ Notes for client:
   - `followedBy` contains the next aria2 `gid`
 - If `primaryPath` starts with `[METADATA]`, the download is still in metadata phase
 - If `primaryPath` is a real file path, the content download has started
+- `fileSelection.state` will move to `applied` once the API has identified the largest `.mkv`/`.mp4` file and told aria2 to keep only that file
+- If no `.mkv` or `.mp4` exists in a multi-file torrent, `fileSelection.state` becomes `not_applicable`
 
 ## Suggested Apple TV client model
 

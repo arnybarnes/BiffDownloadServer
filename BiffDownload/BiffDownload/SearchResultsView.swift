@@ -23,6 +23,10 @@ struct SearchResultsView: View {
                             Text(message)
                                 .font(.title3.weight(.medium))
                                 .foregroundStyle(Color.white.opacity(0.72))
+                        } else {
+                            Text("Select a file to choose the destination folder.")
+                                .font(.title3.weight(.medium))
+                                .foregroundStyle(Color.white.opacity(0.72))
                         }
                     }
 
@@ -59,19 +63,32 @@ struct SearchResultsView: View {
                         .background(AppCardBackground())
                 }
 
-                ScrollView {
-                    LazyVStack(spacing: 4) {
-                        ForEach(viewModel.searchResults) { result in
-                            Button {
-                                Task { await viewModel.queueDownload(result: result) }
-                            } label: {
-                                SearchResultRow(result: result)
+                if let error = viewModel.searchError {
+                    Text(error)
+                        .font(.callout)
+                        .foregroundStyle(Color(red: 1.0, green: 0.82, blue: 0.80))
+                        .padding(20)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(AppCardBackground())
+                }
+
+                if !viewModel.searchResults.isEmpty {
+                    ScrollView {
+                        LazyVStack(spacing: 4) {
+                            ForEach(viewModel.searchResults) { result in
+                                Button {
+                                    viewModel.selectResultForDownload(result)
+                                } label: {
+                                    SearchResultRow(result: result)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(viewModel.isQueueing)
                             }
-                            .buttonStyle(.plain)
-                            .disabled(viewModel.isQueueing)
                         }
                     }
                 }
+
+                Spacer()
             }
             .padding(.horizontal, 60)
             .padding(.vertical, 56)

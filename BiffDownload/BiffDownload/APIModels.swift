@@ -42,6 +42,48 @@ struct SearchResult: Decodable, Identifiable {
     }
 }
 
+// MARK: - Download Folders
+
+struct DownloadFoldersResponse: Decodable {
+    let status: String
+    let root: String?
+    let count: Int?
+    let folders: [DownloadFolderChoice]?
+}
+
+struct DownloadFolderChoice: Decodable, Identifiable, Hashable {
+    let key: String
+    let name: String
+    let relativePath: String?
+    let absolutePath: String?
+    let isDefault: Bool
+
+    var id: String {
+        key.isEmpty ? "__default__" : key
+    }
+
+    var displayName: String {
+        name.isEmpty ? "Default" : name
+    }
+
+    var subtitle: String {
+        if let absolutePath, !absolutePath.isEmpty {
+            return absolutePath
+        }
+        return "Default download root"
+    }
+
+    static func fallback(root: String? = nil) -> DownloadFolderChoice {
+        DownloadFolderChoice(
+            key: "",
+            name: "Default",
+            relativePath: "",
+            absolutePath: root,
+            isDefault: true
+        )
+    }
+}
+
 // MARK: - Queue Download
 
 struct QueueDownloadResponse: Decodable {
@@ -49,6 +91,16 @@ struct QueueDownloadResponse: Decodable {
     let message: String?
     let downloader: String?
     let gid: String?
+    let directory: String?
+    let stagingDirectory: String?
+    let fileName: String?
+}
+
+struct FinalizeDownloadResponse: Decodable {
+    let status: String
+    let message: String?
+    let downloader: String?
+    let download: DownloadInfo?
 }
 
 // MARK: - Download Status
@@ -69,9 +121,13 @@ struct DownloadInfo: Decodable {
     let downloadSpeedBytesPerSecond: Int64?
     let directory: String?
     let primaryPath: String?
+    let stagingDirectory: String?
     let name: String?
     let metadataGid: String?
     let followedBy: [String]?
+    let fileSelection: DownloadFileSelection?
+    let finalization: DownloadFinalization?
+    let cleanup: DownloadCleanup?
 
     var isMetadataPhase: Bool {
         if metadataGid != nil && gid == requestedGid {
@@ -85,7 +141,7 @@ struct DownloadInfo: Decodable {
 
     var progress: Double {
         guard let totalBytes, totalBytes > 0, let completedBytes else { return 0 }
-        return Double(completedBytes) / Double(totalBytes)
+        return min(1, Double(completedBytes) / Double(totalBytes))
     }
 
     var formattedSpeed: String {
@@ -121,14 +177,167 @@ struct DownloadInfo: Decodable {
     }
 
     var displayName: String {
-        if let name, !name.isEmpty { return name }
+        if let finalPath = finalization?.finalPath, !finalPath.isEmpty {
+            return (finalPath as NSString).lastPathComponent
+        }
+        if let destinationPath = finalization?.destinationPath, !destinationPath.isEmpty {
+            return (destinationPath as NSString).lastPathComponent
+        }
         if let primaryPath, !primaryPath.isEmpty, !primaryPath.hasPrefix("[METADATA]") {
             return (primaryPath as NSString).lastPathComponent
         }
+        if let name, !name.isEmpty { return name }
         return gid ?? "Download"
+    }
+
+    var displayDirectory: String? {
+        if let finalPath = finalization?.finalPath, !finalPath.isEmpty {
+            return (finalPath as NSString).deletingLastPathComponent
+        }
+        if let targetDirectory = finalization?.targetDirectory, !targetDirectory.isEmpty {
+            return targetDirectory
+        }
+        return directory
+    }
+
+    var displayPrimaryPath: String? {
+        if let finalPath = finalization?.finalPath, !finalPath.isEmpty {
+            return finalPath
+        }
+        return primaryPath
+    }
+
+    var hasDownloadedAllBytes: Bool {
+        guard let totalBytes, totalBytes > 0, let completedBytes else { return false }
+        return completedBytes >= totalBytes
+    }
+
+    var finalizationState: String {
+        finalization?.state ?? "not_requested"
+    }
+
+    var isFinalizationInProgress: Bool {
+        switch finalizationState {
+        case "queued", "in_progress":
+            return true
+        default:
+            return false
+        }
+    }
+
+    var isFinalizationCompleted: Bool {
+        finalizationState == "completed"
+    }
+
+    var isFinalizationError: Bool {
+        finalizationState == "error"
+    }
+
+    var isReadyForFinalization: Bool {
+        hasDownloadedAllBytes && !isMetadataPhase && !isError
+    }
+
+    var isAwaitingFinalization: Bool {
+        isReadyForFinalization && !isFinalizationInProgress && !isFinalizationCompleted && !isFinalizationError
+    }
+
+    var isTerminalForUI: Bool {
+        isError || isFinalizationCompleted || isFinalizationError
+    }
+
+    var cleanupState: String {
+        cleanup?.state ?? "not_requested"
+    }
+
+    var isCleanupInProgress: Bool {
+        cleanupState == "in_progress"
+    }
+
+    var isCleanupCompleted: Bool {
+        cleanupState == "completed"
+    }
+
+    var isCleanupError: Bool {
+        cleanupState == "error"
+    }
+
+    var canDeleteTempFiles: Bool {
+        isFinalizationCompleted && !isCleanupCompleted && !isCleanupInProgress
     }
 
     var isComplete: Bool { state == "complete" }
     var isError: Bool { state == "error" }
     var isActive: Bool { state == "active" || state == "waiting" || state == "paused" }
+}
+
+struct DownloadFileSelection: Decodable {
+    let state: String?
+    let message: String?
+    let selectedFile: DownloadSelectedFile?
+    let renameTarget: DownloadRenameTarget?
+
+    var displayState: String {
+        guard let state, !state.isEmpty else { return "Pending" }
+        return state
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
+    }
+}
+
+struct DownloadSelectedFile: Decodable {
+    let index: String?
+    let name: String?
+    let path: String?
+    let sizeBytes: Int64?
+
+    var displayName: String {
+        if let name, !name.isEmpty {
+            return name
+        }
+        if let path, !path.isEmpty {
+            return (path as NSString).lastPathComponent
+        }
+        return "Selected video file"
+    }
+}
+
+struct DownloadRenameTarget: Decodable {
+    let requestedName: String?
+    let fileName: String?
+    let appliesToIndex: String?
+}
+
+struct DownloadFinalization: Decodable {
+    let state: String?
+    let message: String?
+    let mode: String?
+    let stagingDirectory: String?
+    let targetDirectory: String?
+    let sourcePath: String?
+    let destinationPath: String?
+    let totalBytes: Int64?
+    let completedBytes: Int64?
+    let finalPath: String?
+
+    var progress: Double {
+        guard let totalBytes, totalBytes > 0, let completedBytes else { return 0 }
+        return min(1, Double(completedBytes) / Double(totalBytes))
+    }
+
+    var formattedProgress: String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let completed = formatter.string(fromByteCount: completedBytes ?? 0)
+        if let totalBytes, totalBytes > 0 {
+            let total = formatter.string(fromByteCount: totalBytes)
+            return "\(completed) / \(total)"
+        }
+        return completed
+    }
+}
+
+struct DownloadCleanup: Decodable {
+    let state: String?
+    let message: String?
+    let deletedPaths: [String]?
 }

@@ -135,6 +135,8 @@ struct DownloadFlowContainerView: View {
                     SearchView(viewModel: viewModel)
                 case .results:
                     SearchResultsView(viewModel: viewModel)
+                case .destination:
+                    DownloadOptionsView(viewModel: viewModel)
                 case .downloading:
                     DownloadStatusView(viewModel: viewModel)
                 }
