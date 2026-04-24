@@ -43,49 +43,55 @@ struct SearchView: View {
                         .font(.body)
 
                     if viewModel.appendEpisode {
-                        HStack(spacing: 24) {
-                            HStack(spacing: 10) {
+                        HStack(spacing: 80) {
+                            HStack(spacing: 40) {
                                 Text("Season")
                                     .font(.body)
                                     .foregroundStyle(Color.white.opacity(0.72))
                                 Button {
                                     if viewModel.seasonNumber > 1 { viewModel.seasonNumber -= 1 }
                                 } label: {
-                                    Image(systemName: "minus.circle")
+                                    StepperButtonLabel(systemImage: "minus")
                                 }
+                                .buttonStyle(.plain)
                                 .disabled(viewModel.seasonNumber <= 1)
 
                                 Text("\(viewModel.seasonNumber)")
                                     .font(.headline)
-                                    .frame(minWidth: 40)
+                                    .foregroundStyle(.white)
+                                    .frame(minWidth: 60)
 
                                 Button {
                                     viewModel.seasonNumber += 1
                                 } label: {
-                                    Image(systemName: "plus.circle")
+                                    StepperButtonLabel(systemImage: "plus")
                                 }
+                                .buttonStyle(.plain)
                             }
 
-                            HStack(spacing: 10) {
+                            HStack(spacing: 40) {
                                 Text("Episode")
                                     .font(.body)
                                     .foregroundStyle(Color.white.opacity(0.72))
                                 Button {
                                     if viewModel.episodeNumber > 1 { viewModel.episodeNumber -= 1 }
                                 } label: {
-                                    Image(systemName: "minus.circle")
+                                    StepperButtonLabel(systemImage: "minus")
                                 }
+                                .buttonStyle(.plain)
                                 .disabled(viewModel.episodeNumber <= 1)
 
                                 Text("\(viewModel.episodeNumber)")
                                     .font(.headline)
-                                    .frame(minWidth: 40)
+                                    .foregroundStyle(.white)
+                                    .frame(minWidth: 60)
 
                                 Button {
                                     viewModel.episodeNumber += 1
                                 } label: {
-                                    Image(systemName: "plus.circle")
+                                    StepperButtonLabel(systemImage: "plus")
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -145,5 +151,16 @@ struct SearchView: View {
         .onAppear {
             isSearchFieldFocused = true
         }
+    }
+}
+
+private struct StepperButtonLabel: View {
+    let systemImage: String
+
+    var body: some View {
+        Image(systemName: "\(systemImage).circle.fill")
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(Color(red: 0.08, green: 0.08, blue: 0.12), .white)
+            .font(.title2.weight(.semibold))
     }
 }
