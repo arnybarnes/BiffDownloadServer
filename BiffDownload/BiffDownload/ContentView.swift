@@ -10,10 +10,38 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var connectionModel = ServerConnectionViewModel()
     @StateObject private var flowModel = DownloadFlowViewModel()
+    @StateObject private var filesModel = FilesViewModel()
     @State private var showingSearch = false
     @Namespace private var searchButton
 
     var body: some View {
+        TabView {
+            downloadTab
+                .tabItem {
+                    Label("Download", systemImage: "arrow.down.circle")
+                }
+
+            PlaceholderTabView(title: "Subtitles", systemImage: "captions.bubble")
+                .tabItem {
+                    Label("Subtitles", systemImage: "captions.bubble")
+                }
+
+            FilesView(connectionModel: connectionModel, viewModel: filesModel)
+                .tabItem {
+                    Label("Files", systemImage: "folder")
+                }
+
+            PlaceholderTabView(title: "AI", systemImage: "sparkles")
+                .tabItem {
+                    Label("AI", systemImage: "sparkles")
+                }
+        }
+        .task {
+            await connectionModel.connectOnLaunchIfNeeded()
+        }
+    }
+
+    private var downloadTab: some View {
         NavigationStack {
             ZStack {
                 AppBackgroundView()
@@ -99,9 +127,6 @@ struct ContentView: View {
                 })
             }
         }
-        .task {
-            await connectionModel.connectOnLaunchIfNeeded()
-        }
     }
 
     private func configureFlowModel() {
@@ -118,6 +143,33 @@ struct ContentView: View {
             return loaded.config.polling.downloadStatusIntervalSeconds
         }
         return 2
+    }
+}
+
+// MARK: - Tabs
+
+private struct PlaceholderTabView: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                AppBackgroundView()
+
+                VStack(spacing: 22) {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 72, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.86))
+
+                    Text(title)
+                        .font(.system(size: 48, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .navigationBarHidden(true)
+        }
     }
 }
 

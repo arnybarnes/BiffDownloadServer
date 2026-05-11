@@ -84,6 +84,74 @@ struct DownloadFolderChoice: Decodable, Identifiable, Hashable {
     }
 }
 
+// MARK: - Files
+
+struct FileListResponse: Decodable {
+    let status: String
+    let root: String?
+    let path: String?
+    let absolutePath: String?
+    let count: Int?
+    let entries: [FileEntry]?
+}
+
+struct FileEntry: Decodable, Identifiable, Hashable {
+    let name: String
+    let relativePath: String
+    let isDirectory: Bool
+    let sizeBytes: Int64?
+    let modifiedAt: String?
+
+    var id: String { relativePath }
+
+    var formattedSize: String {
+        guard !isDirectory, let sizeBytes, sizeBytes >= 0 else {
+            return isDirectory ? "Folder" : "Unknown"
+        }
+
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: sizeBytes)
+    }
+
+    var formattedModifiedAt: String {
+        guard let modifiedAt, !modifiedAt.isEmpty else { return "Modified date unknown" }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        let date = formatter.date(from: modifiedAt) ?? {
+            let fallbackFormatter = ISO8601DateFormatter()
+            fallbackFormatter.formatOptions = [.withInternetDateTime]
+            return fallbackFormatter.date(from: modifiedAt)
+        }()
+
+        guard let date else { return modifiedAt }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+struct FileDeleteResponse: Decodable {
+    let status: String
+    let message: String?
+    let deletedPath: String?
+}
+
+struct FileMoveResponse: Decodable {
+    let status: String
+    let message: String?
+    let sourcePath: String?
+    let destinationPath: String?
+}
+
+struct FileRenameResponse: Decodable {
+    let status: String
+    let message: String?
+    let oldPath: String?
+    let newPath: String?
+    let newName: String?
+}
+
 // MARK: - Queue Download
 
 struct QueueDownloadResponse: Decodable {

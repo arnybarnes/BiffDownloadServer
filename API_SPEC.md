@@ -14,17 +14,26 @@ Local web UI:
 
 ## Overview
 
-This API is intended for an Apple TV client.
+This API is intended for the Apple TV client.
 
-Flow:
+Current download flow:
 
-1. Search torrents
-2. Show results
-3. User chooses a result
-4. Client sends the selected `resultId` back to the server
-5. Server queues the download through `aria2`
-6. Client polls download status by `gid`
-7. If the original request was a magnet link, the API may transparently follow aria2 from metadata download to content download
+1. Search torrents.
+2. Show results.
+3. User chooses a result.
+4. User chooses a destination folder and optional rename target.
+5. Client queues the download.
+6. Server downloads the entire torrent into `C:\Users\arnyb\Downloads\temp`.
+7. Client polls status by `gid`.
+8. When `completedBytes >= totalBytes`, the Apple TV client calls the explicit finalize endpoint.
+9. Server copies the selected video file from `temp` to the chosen destination folder.
+10. If the user wants to remove the leftover torrent data from `temp`, the Apple TV client calls the explicit cleanup endpoint.
+
+Important behavior:
+
+- The server does not auto-move files when aria2 reports a terminal status.
+- The server does not auto-delete temp files after copy.
+- For some torrents, aria2 may stay `active` after 100% because it is still seeding. Clients must key off byte completion, not only aria2 `state == "complete"`.
 
 ## Authentication
 
@@ -33,10 +42,10 @@ This is acceptable only for a trusted LAN during development.
 
 ## Runtime Notes
 
-- The current downloader is `aria2`
-- Downloads are stored in `C:\Users\arnyb\Downloads`
-- The Apple TV client can request either the default root or an existing immediate subfolder under that root
-- The API returns the effective aria2 download directory and primary file path in download status responses
+- Downloader: `aria2`
+- Download root: `C:\Users\arnyb\Downloads`
+- Temp staging root: `C:\Users\arnyb\Downloads\temp`
+- The API may transparently follow aria2 from a magnet metadata task to the effective content task
 
 ## Endpoints
 
@@ -57,7 +66,8 @@ Example response:
   },
   "downloader": {
     "name": "aria2",
-    "configured": true
+    "configured": true,
+    "downloadRoot": "C:\\Users\\arnyb\\Downloads"
   }
 }
 ```
@@ -68,7 +78,7 @@ Legacy compatibility:
 
 ### `GET /api/v1/system`
 
-Returns the current hostname, detected LAN IPv4 addresses, and the preferred LAN API URL.
+Returns the current hostname, detected LAN IPv4 addresses, the preferred LAN API URL, and whether restart is supported.
 
 Example response:
 
@@ -106,8 +116,7 @@ Behavior:
 
 - Windows-only
 - Launches `start-local.ps1` in a detached process
-- That script stops listeners on the web, API, and aria2 ports, then starts the stack again
-- The current API request should return before the local services are recycled
+- The current request should return before the local services are recycled
 
 Example response:
 
@@ -123,6 +132,36 @@ Status codes:
 - `202 Accepted` when restart was scheduled
 - `500 Internal Server Error` if the restart process could not be launched
 - `501 Not Implemented` if restart is unavailable on the current host
+
+### `GET /api/v1/download-folders`
+
+Returns the destination folders available under the configured download root.
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "root": "C:\\Users\\arnyb\\Downloads",
+  "count": 3,
+  "folders": [
+    {
+      "key": "",
+      "name": "Default",
+      "relativePath": "",
+      "absolutePath": "C:\\Users\\arnyb\\Downloads",
+      "isDefault": true
+    },
+    {
+      "key": "ForAllMankindSeason5",
+      "name": "ForAllMankindSeason5",
+      "relativePath": "ForAllMankindSeason5",
+      "absolutePath": "C:\\Users\\arnyb\\Downloads\\ForAllMankindSeason5",
+      "isDefault": false
+    }
+  ]
+}
+```
 
 ### `GET /api/v1/search?q=<query>`
 
@@ -143,7 +182,7 @@ Example response:
   "message": "Found 25 result(s) from Prowlarr.",
   "provider": "prowlarr",
   "count": 25,
- "items": [
+  "items": [
     {
       "resultId": "1b9d9bd9d61f4e2f9bbca8ce6ff6fd7f",
       "title": "Ubuntu 22.04 LTS",
@@ -164,70 +203,41 @@ Notes for client:
 - Use `resultId` when the user picks a search result
 - Do not expect provider download URLs in the search response
 - The server intentionally hides provider-specific source URLs and API keys from the Apple TV client
-- Treat `sizeBytes`, `seeders`, and `publishedAt` as optional
+- Treat `sizeBytes`, `seeders`, `publishedAt`, and `hasSource` as optional
 
 Legacy compatibility:
 
 - `GET /api/search?q=<query>` also exists and returns the raw provider search payload
 
-### `GET /api/v1/download-folders`
-
-Returns the default download root plus existing folder choices exactly one level deep.
-
-Example response:
-
-```json
-{
-  "status": "ok",
-  "root": "C:\\Users\\arnyb\\Downloads",
-  "count": 3,
-  "folders": [
-    {
-      "key": "",
-      "name": "Default",
-      "relativePath": "",
-      "absolutePath": "C:\\Users\\arnyb\\Downloads",
-      "isDefault": true
-    },
-    {
-      "key": "Movies",
-      "name": "Movies",
-      "relativePath": "Movies",
-      "absolutePath": "C:\\Users\\arnyb\\Downloads\\Movies",
-      "isDefault": false
-    }
-  ]
-}
-```
-
-Notes for client:
-
-- Use `key` as the value to send back in `POST /api/v1/downloads`
-- The server only accepts the default root or an existing immediate child folder
-- The server does not create new folders through this endpoint
-
 ### `POST /api/v1/downloads`
 
-Queues a selected torrent in the configured downloader.
+Queues a selected torrent in aria2.
 
 Accepted JSON body fields:
 
-- `resultId`
-- `sourceUrl`
-- `downloadUrl`
-- `magnetUri`
-- `folder`
-- `fileName`
+- One of:
+  - `resultId`
+  - `sourceUrl`
+  - `downloadUrl`
+  - `magnetUri`
+- Optional:
+  - `folder`: direct child folder key returned by `GET /api/v1/download-folders`
+  - `fileName`: requested output name without a path; extension is optional
 
-At least one is required.
+Important behavior:
+
+- The entire torrent is downloaded into `temp`
+- The server records the chosen destination folder and requested rename target
+- The server does not ask aria2 to prune the torrent down to a single file
+- The server does not move or delete anything at queue time
 
 Example request:
 
 ```json
 {
   "resultId": "1b9d9bd9d61f4e2f9bbca8ce6ff6fd7f",
-  "folder": "Movies",
-  "fileName": "Movie Night"
+  "folder": "ForAllMankindSeason5",
+  "fileName": "s05e03"
 }
 ```
 
@@ -239,8 +249,9 @@ Example response:
   "message": "Download queued.",
   "downloader": "aria2",
   "gid": "2089b05ecca3d829",
-  "directory": "C:\\Users\\arnyb\\Downloads\\Movies",
-  "fileName": "Movie Night.mkv"
+  "directory": "C:\\Users\\arnyb\\Downloads\\ForAllMankindSeason5",
+  "stagingDirectory": "C:\\Users\\arnyb\\Downloads\\temp",
+  "fileName": "s05e03.mkv"
 }
 ```
 
@@ -250,18 +261,9 @@ Status codes:
 - `400 Bad Request` for missing or invalid body
 - `502 Bad Gateway` when the downloader is unavailable or returns an error
 
-Notes for client:
-
-- Omit `folder` or send an empty string to use the default download root
-- `folder` must match one of the `key` values returned by `GET /api/v1/download-folders`
-- `fileName` is optional and must be a single Windows file name fragment, not a path
-- If `fileName` has no extension, the API uses the chosen video file extension when available, otherwise it defaults to `.mkv`
-- For BitTorrent items, the API waits until the torrent file list is known, then applies the rename to the selected video file if possible
-- For multi-file torrents, the API keeps only the largest `.mkv` or `.mp4` file and discards the rest from the requested download
-
 ### `GET /api/v1/downloads/{gid}`
 
-Returns the current status of a queued aria2 download.
+Returns the current status of a queued aria2 download plus server-side selection, finalization, and cleanup state.
 
 Example response:
 
@@ -275,29 +277,47 @@ Example response:
     "state": "active",
     "infoHash": "abc123",
     "totalBytes": 3654957056,
-    "completedBytes": 524288000,
-    "downloadSpeedBytesPerSecond": 3145728,
-    "directory": "C:\\Users\\arnyb\\Downloads",
-    "primaryPath": "C:\\Users\\arnyb\\Downloads\\ubuntu.iso",
-    "name": "ubuntu.iso",
+    "completedBytes": 3654957056,
+    "downloadSpeedBytesPerSecond": 0,
+    "directory": "C:\\Users\\arnyb\\Downloads\\ForAllMankindSeason5",
+    "primaryPath": "C:\\Users\\arnyb\\Downloads\\temp\\For All Mankind\\s05e03.mkv",
+    "stagingDirectory": "C:\\Users\\arnyb\\Downloads\\temp",
+    "name": "For All Mankind",
     "metadataGid": "2089b05ecca3d829",
     "followedBy": [
       "7532af166cc96d59"
     ],
     "fileSelection": {
-      "state": "applied",
-      "message": "Largest video file locked in for download.",
+      "state": "selected",
+      "message": "Entire torrent stays in temp; the selected video will be copied after the download reaches 100%.",
       "selectedFile": {
-        "index": "3",
-        "name": "Movie.2026.2160p.mkv",
-        "path": "C:\\Users\\arnyb\\Downloads\\Movie Pack\\Movie.2026.2160p.mkv",
-        "sizeBytes": 12884901888
+        "index": "5",
+        "name": "s05e03.mkv",
+        "path": "C:\\Users\\arnyb\\Downloads\\temp\\For All Mankind\\s05e03.mkv",
+        "sizeBytes": 3654957056
       },
       "renameTarget": {
-        "requestedName": "Movie Night",
-        "fileName": "Movie Night.mkv",
-        "appliesToIndex": "3"
+        "requestedName": "s05e03",
+        "fileName": "s05e03.mkv",
+        "appliesToIndex": "5"
       }
+    },
+    "finalization": {
+      "state": "not_requested",
+      "message": "Download data is complete. Waiting for the Apple TV app to request the final copy.",
+      "mode": null,
+      "stagingDirectory": "C:\\Users\\arnyb\\Downloads\\temp",
+      "targetDirectory": "C:\\Users\\arnyb\\Downloads\\ForAllMankindSeason5",
+      "sourcePath": null,
+      "destinationPath": null,
+      "totalBytes": null,
+      "completedBytes": null,
+      "finalPath": null
+    },
+    "cleanup": {
+      "state": "not_requested",
+      "message": null,
+      "deletedPaths": null
     }
   }
 }
@@ -309,81 +329,272 @@ Notes for client:
 - `gid` is the effective aria2 task currently representing the actual download
 - For direct torrents, `requestedGid` and `gid` may be the same
 - For magnet links, aria2 may first create a metadata task, then spawn a content task
-- When that happens:
-  - `metadataGid` is the metadata stage
-  - `gid` points at the content stage once available
-  - `followedBy` contains the next aria2 `gid`
-- If `primaryPath` starts with `[METADATA]`, the download is still in metadata phase
-- If `primaryPath` is a real file path, the content download has started
-- `fileSelection.state` will move to `applied` once the API has identified the largest `.mkv`/`.mp4` file and told aria2 to keep only that file
-- If no `.mkv` or `.mp4` exists in a multi-file torrent, `fileSelection.state` becomes `not_applicable`
+- If `completedBytes >= totalBytes`, the content is ready for explicit finalization even if `state` is still `active`
+- `directory` is the user-selected destination folder, not the temp staging folder
+- `primaryPath` is the current working file path until finalization completes, then becomes the final copied path
 
-## Suggested Apple TV client model
+State values returned inside `download`:
 
-### SearchResult
+- `fileSelection.state`:
+  - `pending`
+  - `selected`
+  - `not_requested`
+- `finalization.state`:
+  - `not_requested`
+  - `queued`
+  - `in_progress`
+  - `completed`
+  - `error`
+- `cleanup.state`:
+  - `not_requested`
+  - `in_progress`
+  - `completed`
+  - `error`
 
-```json
-{
-  "title": "string",
-  "indexer": "string",
-  "sizeBytes": 0,
-  "seeders": 0,
-  "leechers": 0,
-  "publishedAt": "ISO-8601 string or null",
-  "protocol": "string or null",
-  "resultId": "string",
-  "hasSource": true
-}
-```
+### `POST /api/v1/downloads/{gid}/finalize`
 
-### QueuedDownload
+Starts the explicit copy from `temp` to the selected destination folder.
 
-```json
-{
-  "status": "ok",
-  "message": "Download queued.",
-  "downloader": "aria2",
-  "gid": "string"
-}
-```
+Behavior:
 
-### DownloadStatus
+- Requires `completedBytes >= totalBytes`
+- Chooses the selected video file from the torrent contents
+- Applies the requested rename target if one was provided
+- Copies the selected video into the destination folder
+- Leaves the original torrent data in `temp`
+
+Example response while copy is starting:
 
 ```json
 {
   "status": "ok",
+  "message": "Final copy requested.",
   "downloader": "aria2",
   "download": {
-    "requestedGid": "string",
-    "gid": "string",
-    "state": "active|waiting|paused|complete|error|removed",
-    "infoHash": "string or null",
-    "totalBytes": 0,
-    "completedBytes": 0,
-    "downloadSpeedBytesPerSecond": 0,
-    "directory": "string or null",
-    "primaryPath": "string or null",
-    "name": "string or null",
-    "metadataGid": "string or null",
-    "followedBy": [
-      "string"
-    ]
+    "finalization": {
+      "state": "queued",
+      "message": "Queued selected video for copy into the destination folder.",
+      "mode": "copy",
+      "sourcePath": "C:\\Users\\arnyb\\Downloads\\temp\\For All Mankind\\s05e03.mkv",
+      "destinationPath": "C:\\Users\\arnyb\\Downloads\\ForAllMankindSeason5\\s05e03.mkv",
+      "totalBytes": 3654957056,
+      "completedBytes": 0,
+      "finalPath": null
+    }
   }
 }
 ```
 
-### Suggested client logic for phase
+Status codes:
 
-- Metadata phase:
-  - `metadataGid != null`
-  - or `primaryPath` starts with `[METADATA]`
-- Content phase:
-  - `primaryPath` points to a real filesystem path
-  - or `gid != requestedGid`
+- `202 Accepted` when copy was queued
+- `200 OK` if copy was already running or already completed
+- `409 Conflict` if the download is not ready or the source file could not be resolved
+- `500 Internal Server Error` if the destination could not be prepared
+- `502 Bad Gateway` if aria2 could not be queried
 
-## Error Notes
+### `POST /api/v1/downloads/{gid}/cleanup`
 
-- `GET /api/v1/search` returns `400 Bad Request` if `q` is missing
-- `POST /api/v1/downloads` returns `400 Bad Request` for invalid JSON or when none of `resultId`, `sourceUrl`, `downloadUrl`, or `magnetUri` is provided
-- `GET /api/v1/downloads/{gid}` returns `502 Bad Gateway` if aria2 is unreachable or returns an error
-- `POST /api/v1/system/restart` returns `501 Not Implemented` when the local restart script is unavailable or the host is not Windows
+Deletes the temp torrent data for a previously finalized download.
+
+Behavior:
+
+- Manual only; never triggered automatically
+- Intended to be called after finalization has completed
+- Stops/removes the aria2 task when possible
+- Deletes the download's top-level temp files or temp folder entries
+- Returns cleanup state inside the normal `download` payload
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Temp torrent files deleted.",
+  "downloader": "aria2",
+  "download": {
+    "cleanup": {
+      "state": "completed",
+      "message": "Temp torrent files deleted.",
+      "deletedPaths": [
+        "C:\\Users\\arnyb\\Downloads\\temp\\For All Mankind"
+      ]
+    }
+  }
+}
+```
+
+Important note for clients:
+
+- After successful cleanup, the server attempts to remove the aria2 task/result
+- Clients should use the `POST /cleanup` response as the final cleanup state
+- Do not rely on later `GET /api/v1/downloads/{gid}` calls continuing to succeed after cleanup
+
+Status codes:
+
+- `200 OK` with `download.cleanup.state` describing the result
+- `404 Not Found` for an unknown tracked download id
+- `502 Bad Gateway` if aria2 could not be queried before cleanup started
+
+### `GET /api/v1/files`
+
+Lists files and folders inside the download root. Pass an optional `path` query parameter to browse a subdirectory (relative to the download root).
+
+Example — list root:
+
+```http
+GET /api/v1/files
+```
+
+Example — list a subfolder:
+
+```http
+GET /api/v1/files?path=ForAllMankindSeason5
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "root": "C:\\Users\\arnyb\\Downloads",
+  "path": "ForAllMankindSeason5",
+  "absolutePath": "C:\\Users\\arnyb\\Downloads\\ForAllMankindSeason5",
+  "count": 2,
+  "entries": [
+    {
+      "name": "Extras",
+      "relativePath": "ForAllMankindSeason5\\Extras",
+      "isDirectory": true,
+      "sizeBytes": null,
+      "modifiedAt": "2026-04-10T18:22:00Z"
+    },
+    {
+      "name": "s05e03.mkv",
+      "relativePath": "ForAllMankindSeason5\\s05e03.mkv",
+      "isDirectory": false,
+      "sizeBytes": 3654957056,
+      "modifiedAt": "2026-04-10T18:22:00Z"
+    }
+  ]
+}
+```
+
+Notes:
+
+- Entries are sorted: directories first, then files, both alphabetically
+- `sizeBytes` is `null` for directories
+- `modifiedAt` is UTC ISO 8601
+- `path` in the response is empty string when listing the root
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if `path` escapes the download root or points to a file
+- `404 Not Found` if the path does not exist
+
+### `POST /api/v1/files/delete`
+
+Deletes a file or folder (recursively) within the download root.
+
+Request body:
+
+```json
+{
+  "path": "ForAllMankindSeason5\\s05e03.mkv"
+}
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Deleted: s05e03.mkv",
+  "deletedPath": "ForAllMankindSeason5\\s05e03.mkv"
+}
+```
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if the path escapes the root or targets the root itself
+- `404 Not Found` if the path does not exist
+- `500 Internal Server Error` if the deletion failed
+
+### `POST /api/v1/files/move`
+
+Moves a file or folder to a different directory within the download root. The item keeps its name; if a name collision occurs the server appends ` (2)`, ` (3)`, etc.
+
+Request body:
+
+```json
+{
+  "source": "ForAllMankindSeason5\\s05e03.mkv",
+  "destination": "Movies"
+}
+```
+
+- `source`: relative path of the file or folder to move
+- `destination`: relative path of the **target directory** (must already exist)
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Moved to: s05e03.mkv",
+  "sourcePath": "ForAllMankindSeason5\\s05e03.mkv",
+  "destinationPath": "Movies\\s05e03.mkv"
+}
+```
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if either path is invalid, or destination is not an existing directory
+- `404 Not Found` if source does not exist
+- `500 Internal Server Error` if the move failed
+
+### `POST /api/v1/files/rename`
+
+Renames a file or folder in place. The new name must not contain path separators.
+
+Request body:
+
+```json
+{
+  "path": "ForAllMankindSeason5\\s05e03.mkv",
+  "name": "For All Mankind S05E03.mkv"
+}
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Renamed to: For All Mankind S05E03.mkv",
+  "oldPath": "ForAllMankindSeason5\\s05e03.mkv",
+  "newPath": "ForAllMankindSeason5\\For All Mankind S05E03.mkv",
+  "newName": "For All Mankind S05E03.mkv"
+}
+```
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if the name is invalid, missing, or already taken at that location
+- `404 Not Found` if the path does not exist
+- `500 Internal Server Error` if the rename failed
+
+## Suggested Apple TV Client Rules
+
+- Search with `GET /api/v1/search`
+- Load folders with `GET /api/v1/download-folders`
+- Queue with `POST /api/v1/downloads`
+- Poll with `GET /api/v1/downloads/{gid}`
+- When `completedBytes >= totalBytes` and `finalization.state == "not_requested"`, call `POST /api/v1/downloads/{gid}/finalize`
+- Keep showing status while `finalization.state` is `queued` or `in_progress`
+- Only show the final success state once `finalization.state == "completed"`
+- Only delete temp files if the user explicitly requests it by calling `POST /api/v1/downloads/{gid}/cleanup`

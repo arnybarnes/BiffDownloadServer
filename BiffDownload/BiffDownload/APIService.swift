@@ -35,6 +35,20 @@ private struct QueueDownloadRequest: Encodable {
     let fileName: String?
 }
 
+private struct DeleteFileRequest: Encodable {
+    let path: String
+}
+
+private struct MoveFileRequest: Encodable {
+    let source: String
+    let destination: String
+}
+
+private struct RenameFileRequest: Encodable {
+    let path: String
+    let name: String
+}
+
 struct APIService {
     let baseURL: URL
     private let session: URLSession
@@ -77,6 +91,74 @@ struct APIService {
         guard let url = components.url else { throw APIError.invalidURL }
 
         return try await perform(URLRequest(url: url))
+    }
+
+    // MARK: - Files
+
+    func files(path: String = "") async throws -> FileListResponse {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL
+        }
+        components.path = "/api/v1/files"
+        if !path.isEmpty {
+            components.queryItems = [URLQueryItem(name: "path", value: path)]
+        }
+
+        guard let url = components.url else { throw APIError.invalidURL }
+
+        return try await perform(URLRequest(url: url))
+    }
+
+    func deleteFile(path: String) async throws -> FileDeleteResponse {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL
+        }
+        components.path = "/api/v1/files/delete"
+
+        guard let url = components.url else { throw APIError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(DeleteFileRequest(path: path))
+
+        return try await perform(request)
+    }
+
+    func moveFile(source: String, destination: String) async throws -> FileMoveResponse {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL
+        }
+        components.path = "/api/v1/files/move"
+
+        guard let url = components.url else { throw APIError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            MoveFileRequest(source: source, destination: destination)
+        )
+
+        return try await perform(request)
+    }
+
+    func renameFile(path: String, name: String) async throws -> FileRenameResponse {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL
+        }
+        components.path = "/api/v1/files/rename"
+
+        guard let url = components.url else { throw APIError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            RenameFileRequest(path: path, name: name)
+        )
+
+        return try await perform(request)
     }
 
     // MARK: - Queue Download
