@@ -202,6 +202,131 @@ def resolve_download_dir(folder: str | None) -> Path:
     return candidate
 
 
+def resolve_download_path(relative_path: str | None) -> Path:
+    root = get_download_root().resolve()
+    path_str = (relative_path or "").strip()
+    if not path_str:
+        return root
+
+    candidate = (root / path_str).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Path must stay inside the download root.") from exc
+
+    return candidate
+
+
+def build_files_payload(relative_path: str | None) -> dict[str, Any]:
+    root = get_download_root()
+    resolved_root = root.resolve()
+    target = resolve_download_path(relative_path)
+
+    if not target.exists():
+        raise FileNotFoundError(f"Path not found: {relative_path or '(root)'}")
+    if not target.is_dir():
+        raise ValueError("Path is not a directory.")
+
+    entries: list[dict[str, Any]] = []
+    for item in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        try:
+            stat = item.stat()
+        except OSError:
+            continue
+        entries.append({
+            "name": item.name,
+            "relativePath": str(item.relative_to(resolved_root)),
+            "isDirectory": item.is_dir(),
+            "sizeBytes": stat.st_size if item.is_file() else None,
+            "modifiedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)),
+        })
+
+    current_relative = str(target.relative_to(resolved_root)) if target != resolved_root else ""
+    return {
+        "status": "ok",
+        "root": str(root),
+        "path": current_relative,
+        "absolutePath": str(target),
+        "count": len(entries),
+        "entries": entries,
+    }
+
+
+def delete_download_path(relative_path: str | None) -> dict[str, Any]:
+    resolved_root = get_download_root().resolve()
+    target = resolve_download_path(relative_path)
+
+    if target == resolved_root:
+        raise ValueError("Cannot delete the download root.")
+    if not target.exists():
+        raise FileNotFoundError(f"Path not found: {relative_path}")
+
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+
+    return {
+        "status": "ok",
+        "message": f"Deleted: {target.name}",
+        "deletedPath": relative_path,
+    }
+
+
+def move_download_path(source_path: str | None, destination_path: str | None) -> dict[str, Any]:
+    resolved_root = get_download_root().resolve()
+    source = resolve_download_path(source_path)
+
+    if source == resolved_root:
+        raise ValueError("Cannot move the download root.")
+    if not source.exists():
+        raise FileNotFoundError(f"Source not found: {source_path}")
+
+    dest_dir = resolve_download_path(destination_path)
+    if not dest_dir.exists() or not dest_dir.is_dir():
+        raise ValueError("Destination must be an existing directory within the download root.")
+    if dest_dir == source:
+        raise ValueError("Source and destination are the same.")
+
+    destination = build_available_destination_path(dest_dir / source.name)
+    shutil.move(str(source), str(destination))
+
+    return {
+        "status": "ok",
+        "message": f"Moved to: {destination.name}",
+        "sourcePath": source_path,
+        "destinationPath": str(destination.relative_to(resolved_root)),
+    }
+
+
+def rename_download_path(relative_path: str | None, new_name: str | None) -> dict[str, Any]:
+    resolved_root = get_download_root().resolve()
+    target = resolve_download_path(relative_path)
+
+    if target == resolved_root:
+        raise ValueError("Cannot rename the download root.")
+    if not target.exists():
+        raise FileNotFoundError(f"Path not found: {relative_path}")
+
+    validated_name = validate_output_name(new_name)
+    if not validated_name:
+        raise ValueError("New name is required.")
+
+    destination = target.parent / validated_name
+    if destination.exists():
+        raise ValueError(f"'{validated_name}' already exists in this location.")
+
+    target.rename(destination)
+
+    return {
+        "status": "ok",
+        "message": f"Renamed to: {validated_name}",
+        "oldPath": relative_path,
+        "newPath": str(destination.relative_to(resolved_root)),
+        "newName": validated_name,
+    }
+
+
 def validate_output_name(file_name: str | None) -> str | None:
     value = (file_name or "").strip()
     if not value:
@@ -1639,6 +1764,20 @@ class ApiHandler(BaseHTTPRequestHandler):
             json_response(self, status_code, payload)
             return
 
+        if parsed.path == "/api/v1/files":
+            params = urllib.parse.parse_qs(parsed.query)
+            path_param = (params.get("path") or [""])[0].strip() or None
+            try:
+                payload = build_files_payload(path_param)
+            except FileNotFoundError as exc:
+                json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                return
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            json_response(self, HTTPStatus.OK, payload)
+            return
+
         json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def do_POST(self) -> None:
@@ -1678,6 +1817,33 @@ class ApiHandler(BaseHTTPRequestHandler):
                     "message": "Local restart scheduled via start-local.ps1.",
                 },
             )
+            return
+
+        if parsed.path in {"/api/v1/files/delete", "/api/v1/files/move", "/api/v1/files/rename"}:
+            try:
+                body = self.read_json_body()
+            except json.JSONDecodeError:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON body"})
+                return
+
+            try:
+                if parsed.path == "/api/v1/files/delete":
+                    result = delete_download_path(body.get("path"))
+                elif parsed.path == "/api/v1/files/move":
+                    result = move_download_path(body.get("source"), body.get("destination"))
+                else:
+                    result = rename_download_path(body.get("path"), body.get("name"))
+            except FileNotFoundError as exc:
+                json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                return
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            except (OSError, shutil.Error) as exc:
+                json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                return
+
+            json_response(self, HTTPStatus.OK, result)
             return
 
         path_parts = [part for part in parsed.path.split("/") if part]

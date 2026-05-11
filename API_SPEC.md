@@ -436,6 +436,158 @@ Status codes:
 - `404 Not Found` for an unknown tracked download id
 - `502 Bad Gateway` if aria2 could not be queried before cleanup started
 
+### `GET /api/v1/files`
+
+Lists files and folders inside the download root. Pass an optional `path` query parameter to browse a subdirectory (relative to the download root).
+
+Example — list root:
+
+```http
+GET /api/v1/files
+```
+
+Example — list a subfolder:
+
+```http
+GET /api/v1/files?path=ForAllMankindSeason5
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "root": "C:\\Users\\arnyb\\Downloads",
+  "path": "ForAllMankindSeason5",
+  "absolutePath": "C:\\Users\\arnyb\\Downloads\\ForAllMankindSeason5",
+  "count": 2,
+  "entries": [
+    {
+      "name": "Extras",
+      "relativePath": "ForAllMankindSeason5\\Extras",
+      "isDirectory": true,
+      "sizeBytes": null,
+      "modifiedAt": "2026-04-10T18:22:00Z"
+    },
+    {
+      "name": "s05e03.mkv",
+      "relativePath": "ForAllMankindSeason5\\s05e03.mkv",
+      "isDirectory": false,
+      "sizeBytes": 3654957056,
+      "modifiedAt": "2026-04-10T18:22:00Z"
+    }
+  ]
+}
+```
+
+Notes:
+
+- Entries are sorted: directories first, then files, both alphabetically
+- `sizeBytes` is `null` for directories
+- `modifiedAt` is UTC ISO 8601
+- `path` in the response is empty string when listing the root
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if `path` escapes the download root or points to a file
+- `404 Not Found` if the path does not exist
+
+### `POST /api/v1/files/delete`
+
+Deletes a file or folder (recursively) within the download root.
+
+Request body:
+
+```json
+{
+  "path": "ForAllMankindSeason5\\s05e03.mkv"
+}
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Deleted: s05e03.mkv",
+  "deletedPath": "ForAllMankindSeason5\\s05e03.mkv"
+}
+```
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if the path escapes the root or targets the root itself
+- `404 Not Found` if the path does not exist
+- `500 Internal Server Error` if the deletion failed
+
+### `POST /api/v1/files/move`
+
+Moves a file or folder to a different directory within the download root. The item keeps its name; if a name collision occurs the server appends ` (2)`, ` (3)`, etc.
+
+Request body:
+
+```json
+{
+  "source": "ForAllMankindSeason5\\s05e03.mkv",
+  "destination": "Movies"
+}
+```
+
+- `source`: relative path of the file or folder to move
+- `destination`: relative path of the **target directory** (must already exist)
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Moved to: s05e03.mkv",
+  "sourcePath": "ForAllMankindSeason5\\s05e03.mkv",
+  "destinationPath": "Movies\\s05e03.mkv"
+}
+```
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if either path is invalid, or destination is not an existing directory
+- `404 Not Found` if source does not exist
+- `500 Internal Server Error` if the move failed
+
+### `POST /api/v1/files/rename`
+
+Renames a file or folder in place. The new name must not contain path separators.
+
+Request body:
+
+```json
+{
+  "path": "ForAllMankindSeason5\\s05e03.mkv",
+  "name": "For All Mankind S05E03.mkv"
+}
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Renamed to: For All Mankind S05E03.mkv",
+  "oldPath": "ForAllMankindSeason5\\s05e03.mkv",
+  "newPath": "ForAllMankindSeason5\\For All Mankind S05E03.mkv",
+  "newName": "For All Mankind S05E03.mkv"
+}
+```
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if the name is invalid, missing, or already taken at that location
+- `404 Not Found` if the path does not exist
+- `500 Internal Server Error` if the rename failed
+
 ## Suggested Apple TV Client Rules
 
 - Search with `GET /api/v1/search`
