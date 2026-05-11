@@ -46,6 +46,12 @@ class DownloaderConfig:
 
 
 @dataclass
+class SubtitleConfig:
+    username: str | None
+    password: str | None
+
+
+@dataclass
 class DownloadRequestState:
     target_directory: str | None
     requested_file_name: str | None
@@ -1064,6 +1070,69 @@ def get_downloader_config() -> DownloaderConfig:
     return DownloaderConfig(downloader="none", rpc_url=None, secret=None)
 
 
+def get_subtitle_config() -> SubtitleConfig:
+    local_config = load_local_config()
+    opensubtitles_config = local_config.get("subtitles", {}).get("opensubtitles", {})
+    return SubtitleConfig(
+        username=os.getenv("OPENSUBTITLES_USERNAME") or opensubtitles_config.get("username"),
+        password=os.getenv("OPENSUBTITLES_PASSWORD") or opensubtitles_config.get("password"),
+    )
+
+
+def download_subtitles_for_video(
+    video_path: Path,
+    name: str,
+    language: str = "en",
+) -> dict[str, Any]:
+    config = get_subtitle_config()
+    if not config.username or not config.password:
+        raise ValueError("OpenSubtitles credentials are not configured. Add subtitles.opensubtitles to config.local.json.")
+
+    cmd = [
+        sys.executable, "-m", "subliminal",
+        "--provider.opensubtitles.username", config.username,
+        "--provider.opensubtitles.password", config.password,
+        "download",
+        "-l", language,
+        "-p", "opensubtitles",
+        "-f",
+        "-n", name,
+        str(video_path),
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    output = (result.stdout + result.stderr).strip()
+
+    subtitle_path = video_path.with_suffix(f".{language}.srt")
+    if subtitle_path.exists():
+        return {"downloaded": 1, "subtitlePath": subtitle_path, "output": output}
+
+    return {"downloaded": 0, "subtitlePath": None, "output": output}
+
+
+def merge_subtitles_into_video(video_path: Path, subtitle_path: Path) -> Path:
+    output_path = build_available_destination_path(
+        video_path.with_name(f"{video_path.stem}_with_subs{video_path.suffix}")
+    )
+
+    cmd = [
+        "ffmpeg",
+        "-i", str(video_path),
+        "-i", str(subtitle_path),
+        "-c", "copy",
+        "-disposition:s:0", "default",
+        str(output_path),
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {(result.stderr or '').strip()[-500:]}")
+    if not output_path.exists():
+        raise FileNotFoundError("ffmpeg did not produce an output file.")
+
+    return output_path
+
+
 def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
     body = json.dumps(payload, indent=2).encode("utf-8")
     handler.send_response(status)
@@ -1918,6 +1987,61 @@ class ApiHandler(BaseHTTPRequestHandler):
                 payload["message"] = request.cleanup_message or "Could not delete temp files."
             json_response(self, HTTPStatus.OK, payload)
             return
+
+        if parsed.path in {"/api/v1/subtitles/download", "/api/v1/subtitles/merge"}:
+            try:
+                body = self.read_json_body()
+            except json.JSONDecodeError:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON body"})
+                return
+
+            resolved_root = get_download_root().resolve()
+
+            try:
+                if parsed.path == "/api/v1/subtitles/download":
+                    video_path = resolve_download_path(body.get("path"))
+                    if not video_path.is_file():
+                        json_response(self, HTTPStatus.NOT_FOUND, {"error": f"File not found: {body.get('path')}"})
+                        return
+                    name = (body.get("name") or "").strip()
+                    if not name:
+                        json_response(self, HTTPStatus.BAD_REQUEST, {"error": "name is required"})
+                        return
+                    language = (body.get("language") or "en").strip()
+                    dl_result = download_subtitles_for_video(video_path, name, language)
+                    subtitle_relative = str(dl_result["subtitlePath"].relative_to(resolved_root)) if dl_result["subtitlePath"] else None
+                    json_response(self, HTTPStatus.OK, {
+                        "status": "ok",
+                        "message": f"Downloaded {dl_result['downloaded']} subtitle." if dl_result["downloaded"] else "No subtitle found.",
+                        "subtitlePath": subtitle_relative,
+                    })
+                    return
+
+                video_path = resolve_download_path(body.get("videoPath"))
+                subtitle_path = resolve_download_path(body.get("subtitlePath"))
+                if not video_path.is_file():
+                    json_response(self, HTTPStatus.NOT_FOUND, {"error": f"Video not found: {body.get('videoPath')}"})
+                    return
+                if not subtitle_path.is_file():
+                    json_response(self, HTTPStatus.NOT_FOUND, {"error": f"Subtitle not found: {body.get('subtitlePath')}"})
+                    return
+                output_path = merge_subtitles_into_video(video_path, subtitle_path)
+                json_response(self, HTTPStatus.OK, {
+                    "status": "ok",
+                    "message": "Subtitle merged.",
+                    "outputPath": str(output_path.relative_to(resolved_root)),
+                })
+                return
+
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            except FileNotFoundError as exc:
+                json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                return
+            except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+                json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                return
 
         if parsed.path != "/api/v1/downloads":
             json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
