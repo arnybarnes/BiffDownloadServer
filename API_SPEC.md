@@ -163,6 +163,35 @@ Example response:
 }
 ```
 
+### `GET /api/v1/disk`
+
+Returns disk space information for the drive containing the download root.
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "disk": {
+    "path": "C:\\Users\\arnyb\\Downloads",
+    "totalBytes": 1000202039296,
+    "usedBytes": 750151290880,
+    "freeBytes": 250050748416,
+    "percentUsed": 74.9
+  }
+}
+```
+
+Notes:
+
+- `path` is the configured download root
+- `percentUsed` is rounded to one decimal place
+- All byte values reflect the whole drive/volume, not just the download root folder
+
+Status codes:
+
+- `200 OK`
+
 ### `GET /api/v1/search?q=<query>`
 
 Searches the configured provider.

@@ -8,33 +8,57 @@
 import SwiftUI
 
 struct ContentView: View {
+    private enum MainTab: Hashable {
+        case download
+        case subtitles
+        case files
+        case info
+        case ai
+    }
+
     @StateObject private var connectionModel = ServerConnectionViewModel()
     @StateObject private var flowModel = DownloadFlowViewModel()
     @StateObject private var filesModel = FilesViewModel()
+    @StateObject private var infoModel = InfoViewModel()
+    @State private var selectedTab: MainTab = .download
     @State private var showingSearch = false
     @Namespace private var searchButton
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             downloadTab
                 .tabItem {
                     Label("Download", systemImage: "arrow.down.circle")
                 }
+                .tag(MainTab.download)
 
             SubtitlesView(connectionModel: connectionModel)
                 .tabItem {
                     Label("Subtitles", systemImage: "captions.bubble")
                 }
+                .tag(MainTab.subtitles)
 
             FilesView(connectionModel: connectionModel, viewModel: filesModel)
                 .tabItem {
                     Label("Files", systemImage: "folder")
                 }
+                .tag(MainTab.files)
+
+            InfoView(
+                connectionModel: connectionModel,
+                viewModel: infoModel,
+                isActive: selectedTab == .info
+            )
+            .tabItem {
+                Label("Info", systemImage: "info.circle")
+            }
+            .tag(MainTab.info)
 
             PlaceholderTabView(title: "AI", systemImage: "sparkles")
                 .tabItem {
                     Label("AI", systemImage: "sparkles")
                 }
+                .tag(MainTab.ai)
         }
         .task {
             await connectionModel.connectOnLaunchIfNeeded()

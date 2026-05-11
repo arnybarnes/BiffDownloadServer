@@ -80,6 +80,7 @@ struct AppConfig: Decodable {
         let system: String
         let restart: String
         let search: String
+        let disk: String
         let queueDownload: String
         let downloadStatus: String
 
@@ -89,12 +90,13 @@ struct AppConfig: Decodable {
             system = try container.decode(String.self, forKey: .system)
             restart = try container.decodeIfPresent(String.self, forKey: .restart) ?? "/api/v1/system/restart"
             search = try container.decode(String.self, forKey: .search)
+            disk = try container.decodeIfPresent(String.self, forKey: .disk) ?? "/api/v1/disk"
             queueDownload = try container.decode(String.self, forKey: .queueDownload)
             downloadStatus = try container.decode(String.self, forKey: .downloadStatus)
         }
 
         private enum CodingKeys: String, CodingKey {
-            case health, system, restart, search, queueDownload, downloadStatus
+            case health, system, restart, search, disk, queueDownload, downloadStatus
         }
     }
 

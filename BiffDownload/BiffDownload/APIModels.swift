@@ -84,6 +84,60 @@ struct DownloadFolderChoice: Decodable, Identifiable, Hashable {
     }
 }
 
+// MARK: - Disk
+
+struct DiskResponse: Decodable {
+    let status: String
+    let disk: DiskInfo?
+}
+
+struct DiskInfo: Decodable {
+    let path: String
+    let totalBytes: Int64
+    let usedBytes: Int64
+    let freeBytes: Int64
+    let percentUsed: Double?
+
+    var usedFraction: Double {
+        if let percentUsed {
+            return min(max(percentUsed / 100, 0), 1)
+        }
+
+        guard totalBytes > 0 else { return 0 }
+        return min(max(Double(usedBytes) / Double(totalBytes), 0), 1)
+    }
+
+    var formattedTotal: String {
+        Self.byteFormatter.string(fromByteCount: totalBytes)
+    }
+
+    var formattedUsed: String {
+        Self.byteFormatter.string(fromByteCount: usedBytes)
+    }
+
+    var formattedFree: String {
+        Self.byteFormatter.string(fromByteCount: freeBytes)
+    }
+
+    var formattedPercentUsed: String {
+        let percent = percentUsed ?? (usedFraction * 100)
+        return "\(Self.percentFormatter.string(from: NSNumber(value: percent)) ?? "0")%"
+    }
+
+    private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
+
+    private static let percentFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 1
+        return formatter
+    }()
+}
+
 // MARK: - Files
 
 struct FileListResponse: Decodable {

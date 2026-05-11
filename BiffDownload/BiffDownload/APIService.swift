@@ -109,6 +109,19 @@ struct APIService {
         return try await perform(URLRequest(url: url))
     }
 
+    // MARK: - Disk
+
+    func disk() async throws -> DiskResponse {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL
+        }
+        components.path = "/api/v1/disk"
+
+        guard let url = components.url else { throw APIError.invalidURL }
+
+        return try await perform(URLRequest(url: url))
+    }
+
     // MARK: - Files
 
     func files(path: String = "") async throws -> FileListResponse {

@@ -19,6 +19,7 @@
     "system": "/api/v1/system",
     "restart": "/api/v1/system/restart",
     "search": "/api/v1/search",
+    "disk": "/api/v1/disk",
     "queueDownload": "/api/v1/downloads",
     "downloadStatus": "/api/v1/downloads/{gid}"
   },
