@@ -8,6 +8,7 @@ import SwiftUI
 struct FilesView: View {
     private enum DetailFocusTarget: Hashable {
         case parent
+        case createFolder
         case open
         case rename
         case move
@@ -15,6 +16,9 @@ struct FilesView: View {
     }
 
     private enum ModalFocusTarget: Hashable {
+        case createFolderName
+        case createFolderCancel
+        case createFolderConfirm
         case renameName
         case renameCancel
         case renameConfirm
@@ -27,6 +31,8 @@ struct FilesView: View {
 
     @ObservedObject var connectionModel: ServerConnectionViewModel
     @ObservedObject var viewModel: FilesViewModel
+    @State private var isCreatingFolder = false
+    @State private var newFolderName = ""
     @State private var renameEntry: FileEntry?
     @State private var renameText = ""
     @State private var deleteEntry: FileEntry?
@@ -36,7 +42,7 @@ struct FilesView: View {
     @FocusState private var focusedModalTarget: ModalFocusTarget?
 
     private var hasModalOpen: Bool {
-        renameEntry != nil || moveEntry != nil || deleteEntry != nil
+        isCreatingFolder || renameEntry != nil || moveEntry != nil || deleteEntry != nil
     }
 
     var body: some View {
@@ -75,6 +81,13 @@ struct FilesView: View {
             .onChange(of: viewModel.selectedEntry?.id) { selectedID in
                 if selectedID == nil {
                     focusedDetailTarget = nil
+                }
+            }
+            .onChange(of: isCreatingFolder) { isCreating in
+                if isCreating {
+                    focusModal(.createFolderName)
+                } else if !hasModalOpen {
+                    focusedModalTarget = nil
                 }
             }
             .onChange(of: renameEntry?.id) { entryID in
@@ -117,6 +130,18 @@ struct FilesView: View {
             Spacer()
 
             HStack(spacing: 16) {
+                Button {
+                    viewModel.clearMessages()
+                    newFolderName = ""
+                    isCreatingFolder = true
+                } label: {
+                    Label("New Folder", systemImage: "folder.badge.plus")
+                        .font(.headline)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(!connectionModel.isConnected || viewModel.isLoading || viewModel.isWorking)
+
                 Button {
                     Task {
                         await viewModel.goUp()
@@ -268,6 +293,20 @@ struct FilesView: View {
                 .controlSize(.large)
                 .focused($focusedDetailTarget, equals: .parent)
             }
+
+            Button {
+                viewModel.clearMessages()
+                newFolderName = ""
+                isCreatingFolder = true
+            } label: {
+                Label("New Folder", systemImage: "folder.badge.plus")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .focused($focusedDetailTarget, equals: .createFolder)
+            .disabled(viewModel.isLoading || viewModel.isWorking)
         }
     }
 
@@ -434,7 +473,11 @@ struct FilesView: View {
 
     @ViewBuilder
     private var modalOverlay: some View {
-        if let renameEntry {
+        if isCreatingFolder {
+            modalBackground {
+                createFolderPanel
+            }
+        } else if let renameEntry {
             modalBackground {
                 renamePanel(entry: renameEntry)
             }
@@ -445,6 +488,60 @@ struct FilesView: View {
         } else if let deleteEntry {
             modalBackground {
                 deletePanel(entry: deleteEntry)
+            }
+        }
+    }
+
+    private var createFolderPanel: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Text("New Folder")
+                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+
+            Text(viewModel.pathDisplayName)
+                .font(.callout)
+                .foregroundStyle(Color.white.opacity(0.68))
+                .lineLimit(2)
+
+            TextField("Folder name", text: $newFolderName)
+                .textFieldStyle(.plain)
+                .font(.title3)
+                .padding(18)
+                .background(fieldBackground)
+                .focused($focusedModalTarget, equals: .createFolderName)
+
+            modalError
+
+            HStack(spacing: 16) {
+                Button {
+                    dismissCreateFolder()
+                } label: {
+                    Text("Cancel")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .focused($focusedModalTarget, equals: .createFolderCancel)
+
+                Button {
+                    Task {
+                        await viewModel.createFolder(name: newFolderName)
+                        if viewModel.errorMessage == nil {
+                            dismissCreateFolder()
+                        } else {
+                            focusModal(.createFolderName)
+                        }
+                    }
+                } label: {
+                    Label(viewModel.isWorking ? "Creating..." : "Create", systemImage: "folder.badge.plus")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .focused($focusedModalTarget, equals: .createFolderConfirm)
+                .disabled(viewModel.isWorking || newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
     }
@@ -695,6 +792,12 @@ struct FilesView: View {
     private func dismissRename() {
         renameEntry = nil
         renameText = ""
+        focusedModalTarget = nil
+    }
+
+    private func dismissCreateFolder() {
+        isCreatingFolder = false
+        newFolderName = ""
         focusedModalTarget = nil
     }
 

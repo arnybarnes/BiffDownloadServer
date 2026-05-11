@@ -219,6 +219,55 @@ final class FilesViewModel: ObservableObject {
         }
     }
 
+    func createFolder(name: String) async {
+        guard let apiService else {
+            errorMessage = "Not connected to server."
+            return
+        }
+
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            errorMessage = "Enter a folder name."
+            return
+        }
+
+        let invalidCharacters = CharacterSet(charactersIn: "<>:\"/\\|?*")
+        guard trimmedName.rangeOfCharacter(from: invalidCharacters) == nil else {
+            errorMessage = "Folder names cannot contain < > : \" / \\ | ? *."
+            return
+        }
+
+        isWorking = true
+        errorMessage = nil
+        statusMessage = nil
+        logger.info(
+            "Creating folder path=\(self.currentPath, privacy: .public) name=\(trimmedName, privacy: .public)"
+        )
+
+        defer {
+            isWorking = false
+        }
+
+        do {
+            let response = try await apiService.createFolder(path: currentPath, name: trimmedName)
+            statusMessage = response.message ?? "Created \(trimmedName)."
+            logger.info(
+                "Created folder path=\(response.path ?? "<unknown>", privacy: .public)"
+            )
+            await load(path: currentPath, preserveStatus: true)
+
+            if let createdPath = response.path,
+               let createdEntry = entries.first(where: { isSamePath($0.relativePath, createdPath) }) {
+                selectedEntry = createdEntry
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            logger.error(
+                "Create folder failed path=\(self.currentPath, privacy: .public) name=\(trimmedName, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
     func destinationChoices(for entry: FileEntry) -> [FileDestinationChoice] {
         var choices: [FileDestinationChoice] = [
             FileDestinationChoice(path: "", name: "Download Root", detail: root ?? "Root folder")

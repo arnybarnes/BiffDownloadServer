@@ -174,6 +174,24 @@ def print_device_table(reachable: set):
         print(f"  {name:<{col_w}}  {DIM}{udid}{RESET}  {status}")
         log.info(f"  {name}: {'reachable' if udid in reachable else 'not reachable'}")
 
+
+def deployment_targets(reachable: set):
+    """Return configured Apple TVs that are reachable enough to receive an install."""
+    return [(name, udid) for name, udid in DEVICES.items() if udid in reachable]
+
+
+def print_deployment_plan(targets):
+    header("Deployment Plan")
+    if not targets:
+        warn("No reachable Apple TVs will be deployed to.")
+        return
+
+    names = ", ".join(name for name, _ in targets)
+    info(f"Deploying to {len(targets)} Apple TV{'' if len(targets) == 1 else 's'}: {names}")
+    for name, udid in targets:
+        print(f"  {GREEN}→{RESET}  {name}  {DIM}{udid}{RESET}")
+        log.info(f"Deploy target: {name} ({udid})")
+
 # ── Build steps ───────────────────────────────────────────────────────────────
 
 def run_xcodebuild(cmd, spinner_label):
@@ -249,12 +267,16 @@ def export_ipa(archive_path: Path, export_path: Path) -> Path:
 
 def install(ipa_path: Path, reachable: set):
     header("Step 3 — Install on devices")
-    failures = []
+    results = {
+        "successful": [],
+        "failed": [],
+        "skipped": [],
+    }
 
     for name, udid in DEVICES.items():
         if udid not in reachable:
             warn(f"{name} — skipped (not reachable)")
-            failures.append(name)
+            results["skipped"].append(name)
             continue
 
         cmd = ["xcrun", "devicectl", "device", "install", "app",
@@ -273,6 +295,7 @@ def install(ipa_path: Path, reachable: set):
 
         if result.returncode == 0:
             ok(f"{name} — installed")
+            results["successful"].append(name)
         else:
             err(f"{name} — install failed (exit {result.returncode})")
             # Show stderr on terminal for install failures
@@ -280,9 +303,9 @@ def install(ipa_path: Path, reachable: set):
                 if line.strip():
                     print(f"    {DIM}{line}{RESET}")
             info(f"Full output in {log_path}")
-            failures.append(name)
+            results["failed"].append(name)
 
-    return failures
+    return results
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -316,13 +339,17 @@ def main():
         reachable = query_connected_devices()
 
     print_device_table(reachable)
+    targets = deployment_targets(reachable)
 
     if args.dry_run:
+        print_deployment_plan(targets)
         print()
         info("Dry run — stopping before build.")
         return
 
-    if not any(udid in reachable for udid in DEVICES.values()):
+    print_deployment_plan(targets)
+
+    if not targets:
         err("No target devices reachable — aborting.")
         info(f"Full output in {log_path}")
         sys.exit(1)
@@ -339,7 +366,7 @@ def main():
     try:
         archive(archive_path)
         ipa_path = export_ipa(archive_path, export_path)
-        failures = install(ipa_path, reachable)
+        install_results = install(ipa_path, reachable)
     except KeyboardInterrupt:
         print("\n")
         warn("Interrupted — restoring version numbers.")
@@ -352,12 +379,25 @@ def main():
 
     # ── Summary ───────────────────────────────────────────────────────────────
     header("Done")
-    if failures:
-        warn(f"Deployed {new_version} ({new_build}) — failed: {', '.join(failures)}")
+    successful = install_results["successful"]
+    failed = install_results["failed"]
+    skipped = install_results["skipped"]
+
+    if successful:
+        ok(f"Successful: {', '.join(successful)}")
+    else:
+        warn("Successful: none")
+
+    if skipped:
+        warn(f"Skipped: {', '.join(skipped)}")
+
+    if failed:
+        err(f"Failed: {', '.join(failed)}")
+        warn(f"Deployment incomplete for {new_version} ({new_build}).")
         info(f"Log → {log_path}")
         sys.exit(1)
     else:
-        ok(f"Deployed {BOLD}{new_version} ({new_build}){RESET} to all reachable devices.")
+        ok(f"Deployed {BOLD}{new_version} ({new_build}){RESET} to: {', '.join(successful)}")
         info(f"Log → {log_path}")
 
 

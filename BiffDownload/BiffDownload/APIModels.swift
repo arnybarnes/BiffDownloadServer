@@ -152,6 +152,12 @@ struct FileRenameResponse: Decodable {
     let newName: String?
 }
 
+struct FileCreateFolderResponse: Decodable {
+    let status: String
+    let message: String?
+    let path: String?
+}
+
 // MARK: - Subtitles
 
 struct SubtitleDownloadResponse: Decodable {
