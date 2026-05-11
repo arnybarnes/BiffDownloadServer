@@ -588,6 +588,39 @@ Status codes:
 - `404 Not Found` if the path does not exist
 - `500 Internal Server Error` if the rename failed
 
+### `POST /api/v1/files/create-folder`
+
+Creates a new folder inside a directory within the download root. The `path` field is the directory currently being browsed (as returned by `GET /api/v1/files`).
+
+Request body:
+
+```json
+{
+  "path": "ForAllMankindSeason5",
+  "name": "Extras"
+}
+```
+
+- `path`: relative path of the parent directory. Omit or pass empty string to create in the download root.
+- `name`: name of the new folder. Must not contain path separators or invalid Windows characters.
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Created: Extras",
+  "path": "ForAllMankindSeason5\\Extras"
+}
+```
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if the name is missing/invalid, the parent path is not a directory, or a folder with that name already exists
+- `404 Not Found` if the parent path does not exist
+- `500 Internal Server Error` if the folder could not be created
+
 ### `POST /api/v1/subtitles/download`
 
 Downloads an external `.srt` subtitle for a video file using OpenSubtitles (legacy XML-RPC provider). Credentials are read from `config.local.json` under `subtitles.opensubtitles`.

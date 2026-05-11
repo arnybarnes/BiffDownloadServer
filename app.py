@@ -258,6 +258,30 @@ def build_files_payload(relative_path: str | None) -> dict[str, Any]:
     }
 
 
+def create_download_folder(relative_path: str | None, folder_name: str | None) -> dict[str, Any]:
+    resolved_root = get_download_root().resolve()
+    parent = resolve_download_path(relative_path)
+
+    if not parent.exists() or not parent.is_dir():
+        raise ValueError("Parent path must be an existing directory within the download root.")
+
+    validated_name = validate_output_name(folder_name)
+    if not validated_name:
+        raise ValueError("Folder name is required.")
+
+    new_folder = parent / validated_name
+    if new_folder.exists():
+        raise ValueError(f"'{validated_name}' already exists at this location.")
+
+    new_folder.mkdir()
+
+    return {
+        "status": "ok",
+        "message": f"Created: {validated_name}",
+        "path": str(new_folder.relative_to(resolved_root)),
+    }
+
+
 def delete_download_path(relative_path: str | None) -> dict[str, Any]:
     resolved_root = get_download_root().resolve()
     target = resolve_download_path(relative_path)
@@ -1888,7 +1912,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path in {"/api/v1/files/delete", "/api/v1/files/move", "/api/v1/files/rename"}:
+        if parsed.path in {"/api/v1/files/delete", "/api/v1/files/move", "/api/v1/files/rename", "/api/v1/files/create-folder"}:
             try:
                 body = self.read_json_body()
             except json.JSONDecodeError:
@@ -1900,8 +1924,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                     result = delete_download_path(body.get("path"))
                 elif parsed.path == "/api/v1/files/move":
                     result = move_download_path(body.get("source"), body.get("destination"))
-                else:
+                elif parsed.path == "/api/v1/files/rename":
                     result = rename_download_path(body.get("path"), body.get("name"))
+                else:
+                    result = create_download_folder(body.get("path"), body.get("name"))
             except FileNotFoundError as exc:
                 json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
                 return
