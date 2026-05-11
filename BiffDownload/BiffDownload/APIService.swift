@@ -49,6 +49,17 @@ private struct RenameFileRequest: Encodable {
     let name: String
 }
 
+private struct SubtitleDownloadRequest: Encodable {
+    let path: String
+    let name: String
+    let language: String
+}
+
+private struct SubtitleMergeRequest: Encodable {
+    let videoPath: String
+    let subtitlePath: String
+}
+
 struct APIService {
     let baseURL: URL
     private let session: URLSession
@@ -61,7 +72,7 @@ struct APIService {
         self.baseURL = baseURL
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 15
-        config.timeoutIntervalForResource = 30
+        config.timeoutIntervalForResource = 300
         config.waitsForConnectivity = false
         session = URLSession(configuration: config)
     }
@@ -156,6 +167,46 @@ struct APIService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(
             RenameFileRequest(path: path, name: name)
+        )
+
+        return try await perform(request)
+    }
+
+    // MARK: - Subtitles
+
+    func downloadSubtitle(path: String, name: String, language: String = "en") async throws -> SubtitleDownloadResponse {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL
+        }
+        components.path = "/api/v1/subtitles/download"
+
+        guard let url = components.url else { throw APIError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 90
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            SubtitleDownloadRequest(path: path, name: name, language: language)
+        )
+
+        return try await perform(request)
+    }
+
+    func mergeSubtitle(videoPath: String, subtitlePath: String) async throws -> SubtitleMergeResponse {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL
+        }
+        components.path = "/api/v1/subtitles/merge"
+
+        guard let url = components.url else { throw APIError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 300
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            SubtitleMergeRequest(videoPath: videoPath, subtitlePath: subtitlePath)
         )
 
         return try await perform(request)

@@ -21,7 +21,7 @@ struct ContentView: View {
                     Label("Download", systemImage: "arrow.down.circle")
                 }
 
-            PlaceholderTabView(title: "Subtitles", systemImage: "captions.bubble")
+            SubtitlesView(connectionModel: connectionModel)
                 .tabItem {
                     Label("Subtitles", systemImage: "captions.bubble")
                 }

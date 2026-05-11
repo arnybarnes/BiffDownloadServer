@@ -588,6 +588,83 @@ Status codes:
 - `404 Not Found` if the path does not exist
 - `500 Internal Server Error` if the rename failed
 
+### `POST /api/v1/subtitles/download`
+
+Downloads an external `.srt` subtitle for a video file using OpenSubtitles (legacy XML-RPC provider). Credentials are read from `config.local.json` under `subtitles.opensubtitles`.
+
+Request body:
+
+```json
+{
+  "path": "From-season4\\s04e01.mkv",
+  "name": "from s04e01",
+  "language": "en"
+}
+```
+
+- `path`: relative path of the video file within the download root
+- `name`: hint passed to subliminal's `-n` flag for show/episode identification (e.g. `"from s04e01"`)
+- `language`: IETF language code (default: `"en"`)
+
+The subtitle is saved alongside the video as `{stem}.{language}.srt` (e.g. `s04e01.en.srt`).
+
+Example response — found:
+
+```json
+{
+  "status": "ok",
+  "message": "Downloaded 1 subtitle.",
+  "subtitlePath": "From-season4\\s04e01.en.srt"
+}
+```
+
+Example response — not found:
+
+```json
+{
+  "status": "ok",
+  "message": "No subtitle found.",
+  "subtitlePath": null
+}
+```
+
+Status codes:
+
+- `200 OK` in both found and not-found cases
+- `400 Bad Request` if `path` or `name` is missing/invalid, or credentials are not configured
+- `404 Not Found` if the video file does not exist
+- `500 Internal Server Error` if subliminal fails or times out
+
+### `POST /api/v1/subtitles/merge`
+
+Merges an external subtitle file into a video file using ffmpeg. The subtitle is added as a default selectable track; the original video is not modified. Output is written alongside the video as `{stem}_with_subs{ext}` (e.g. `s04e01_with_subs.mkv`). If that name is already taken, a ` (2)` suffix is appended.
+
+Request body:
+
+```json
+{
+  "videoPath": "From-season4\\s04e01.mkv",
+  "subtitlePath": "From-season4\\s04e01.en.srt"
+}
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Subtitle merged.",
+  "outputPath": "From-season4\\s04e01_with_subs.mkv"
+}
+```
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if paths are missing or escape the download root
+- `404 Not Found` if the video or subtitle file does not exist
+- `500 Internal Server Error` if ffmpeg fails or times out
+
 ## Suggested Apple TV Client Rules
 
 - Search with `GET /api/v1/search`

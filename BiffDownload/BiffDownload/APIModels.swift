@@ -152,6 +152,20 @@ struct FileRenameResponse: Decodable {
     let newName: String?
 }
 
+// MARK: - Subtitles
+
+struct SubtitleDownloadResponse: Decodable {
+    let status: String
+    let message: String?
+    let subtitlePath: String?
+}
+
+struct SubtitleMergeResponse: Decodable {
+    let status: String
+    let message: String?
+    let outputPath: String?
+}
+
 // MARK: - Queue Download
 
 struct QueueDownloadResponse: Decodable {
