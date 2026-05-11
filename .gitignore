@@ -1,0 +1,10 @@
+﻿# Exclude all subdirectories
+*/
+
+# Exclude zip files
+*.zip
+
+# Sensitive / generated files
+config.local.json
+*.log
+
