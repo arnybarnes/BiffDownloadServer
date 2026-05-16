@@ -887,6 +887,8 @@ Status codes:
 
 Generates a new subtitle file by sending extracted audio to the registered Mac subtitle helper, then muxes the generated subtitles into a copy of the video.
 
+This is the original synchronous route. It still works, but Apple TV clients should prefer the async job endpoints below so the UI can show stage-by-stage progress.
+
 Request body:
 
 ```json
@@ -947,6 +949,129 @@ Status codes:
 - `502 Bad Gateway` if the Mac helper cannot be reached or returns an HTTP error
 - `500 Internal Server Error` if local extraction, local muxing, or helper-side processing fails
 
+### `POST /api/v1/subtitles/generate/jobs`
+
+Starts an asynchronous AI subtitle generation job and returns immediately.
+
+Request body:
+
+```json
+{
+  "videoPath": "From-season4\\s04e01.mkv"
+}
+```
+
+Accepted fields:
+
+- `videoPath`: preferred relative path of the source video inside the download root
+- `path`: accepted as a compatibility alias for `videoPath`
+- `language`: optional requested language, though Apple TV clients currently omit it and use auto-detection
+
+Example response:
+
+```json
+{
+  "status": "accepted",
+  "job": {
+    "id": "subgen_20260516_021000_ab12cd",
+    "state": "queued",
+    "activeStage": null,
+    "stageLabel": "Queued",
+    "progressPercent": 0,
+    "stageProgressPercent": 0,
+    "detail": "Waiting for the server to start subtitle generation.",
+    "message": null,
+    "videoPath": "From-season4\\s04e01.mkv",
+    "subtitlePath": null,
+    "outputPath": null,
+    "startedAt": "2026-05-16T02:10:00Z",
+    "updatedAt": "2026-05-16T02:10:00Z",
+    "elapsedSeconds": 0.0,
+    "error": null,
+    "macService": null,
+    "transcription": {
+      "requestedLanguage": null,
+      "detectedLanguage": null,
+      "segmentCount": null,
+      "model": null
+    }
+  }
+}
+```
+
+Status codes:
+
+- `202 Accepted`
+- `400 Bad Request` if the request is invalid or the path escapes the download root
+- `404 Not Found` if the video file does not exist
+
+### `GET /api/v1/subtitles/generate/jobs/{jobId}`
+
+Returns the current status of an asynchronous AI subtitle generation job.
+
+Example response while running:
+
+```json
+{
+  "status": "ok",
+  "job": {
+    "id": "subgen_20260516_021000_ab12cd",
+    "state": "transcribing",
+    "activeStage": "transcribing",
+    "stageLabel": "Generating subtitles",
+    "progressPercent": 30,
+    "stageProgressPercent": null,
+    "detail": "The Mac helper is generating subtitles from the uploaded audio.",
+    "message": null,
+    "videoPath": "From-season4\\s04e01.mkv",
+    "subtitlePath": null,
+    "outputPath": null,
+    "startedAt": "2026-05-16T02:10:00Z",
+    "updatedAt": "2026-05-16T02:10:12Z",
+    "elapsedSeconds": 12.4,
+    "error": null,
+    "macService": null,
+    "transcription": {
+      "requestedLanguage": null,
+      "detectedLanguage": null,
+      "segmentCount": null,
+      "model": null
+    }
+  }
+}
+```
+
+Notes:
+
+- `state` is the current job status. Terminal values are `completed` and `failed`.
+- `activeStage` preserves the last in-progress stage even after a terminal `failed` transition so clients can show where the job stopped.
+- `progressPercent` is the weighted overall progress across the whole job.
+- `stageProgressPercent` is only populated for stages where the server can measure real progress, such as extraction, upload, and muxing.
+- `detail` is intended for live user-facing text such as `Extracting audio: 0:42 of 2:31` or `Uploading audio: 8.1 MB of 13.0 MB`.
+
+Job states currently used:
+
+- `queued`
+- `extracting_audio`
+- `uploading_audio`
+- `transcribing`
+- `receiving_srt`
+- `muxing`
+- `completed`
+- `failed`
+
+Notes:
+
+- The current implementation exposes coarse stage progress first
+- Upload progress is reported within the `uploading_audio` stage
+- `transcribing` is currently an in-progress stage without a true percentage from the Mac helper yet
+- Completed jobs include the same `subtitlePath`, `outputPath`, `macService`, and `transcription` fields returned by the synchronous route
+
+Status codes:
+
+- `200 OK`
+- `404 Not Found` if the job id is unknown or has expired
+
 ## Suggested Apple TV Client Rules
 
 - Search with `GET /api/v1/search`
@@ -957,4 +1082,5 @@ Status codes:
 - Keep showing status while `finalization.state` is `queued` or `in_progress`
 - Only show the final success state once `finalization.state == "completed"`
 - Only delete temp files if the user explicitly requests it by calling `POST /api/v1/downloads/{gid}/cleanup`
-- For AI-generated subtitles, check `GET /api/v1/services/mac-api` before calling `POST /api/v1/subtitles/generate`
+- For AI-generated subtitles, check `GET /api/v1/services/mac-api` before calling `POST /api/v1/subtitles/generate/jobs`
+- After starting an AI subtitle job, poll `GET /api/v1/subtitles/generate/jobs/{jobId}` until the job reaches `completed` or `failed`

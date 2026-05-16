@@ -1,5 +1,8 @@
+import http.client
 import json
 import os
+import queue
+import re
 import shutil
 import socket
 import subprocess
@@ -14,7 +17,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 
@@ -32,8 +35,14 @@ SERVICE_HEARTBEATS: dict[str, dict[str, Any]] = {}
 SERVICE_HEARTBEAT_STALE_AFTER_SECONDS = 45.0
 SERVICE_HEALTHCHECK_TIMEOUT_SECONDS = 1.5
 SERVICE_TRANSCRIPTION_TIMEOUT_SECONDS = 900.0
+SUBTITLE_JOB_LOCK = threading.RLock()
+SUBTITLE_GENERATE_JOBS: dict[str, dict[str, Any]] = {}
+SUBTITLE_JOB_RETENTION_SECONDS = 3600.0
 FFMPEG_CANDIDATE_PATHS = [
     Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
+]
+FFPROBE_CANDIDATE_PATHS = [
+    Path(r"C:\ffmpeg\bin\ffprobe.exe"),
 ]
 MKVMERGE_CANDIDATE_PATHS = [
     Path(r"C:\Program Files\MKVToolNix\mkvmerge.exe"),
@@ -60,6 +69,31 @@ SUBTITLE_LANGUAGE_TAGS = {
     "zh": "chi",
     "chinese": "chi",
 }
+SUBTITLE_JOB_STAGE_LABELS = {
+    "queued": "Queued",
+    "extracting_audio": "Extracting audio",
+    "uploading_audio": "Uploading audio to Mac",
+    "transcribing": "Generating subtitles",
+    "receiving_srt": "Receiving subtitle file",
+    "muxing": "Merging into new video",
+    "completed": "Completed",
+    "failed": "Failed",
+}
+SUBTITLE_JOB_PROGRESS_ORDER = (
+    "extracting_audio",
+    "uploading_audio",
+    "transcribing",
+    "receiving_srt",
+    "muxing",
+)
+SUBTITLE_JOB_PROGRESS_WEIGHTS = {
+    "extracting_audio": 15,
+    "uploading_audio": 15,
+    "transcribing": 45,
+    "receiving_srt": 5,
+    "muxing": 20,
+}
+UNSET = object()
 
 
 @dataclass
@@ -286,6 +320,328 @@ def build_registered_service_payload(service_name: str) -> dict[str, Any]:
     }
 
 
+def subtitle_job_stage_label(state: str) -> str:
+    return SUBTITLE_JOB_STAGE_LABELS.get(state, state.replace("_", " ").title())
+
+
+def subtitle_job_progress_percent(state: str, stage_progress_percent: int | None = None) -> int:
+    if state == "queued":
+        return 0
+    if state in {"completed", "failed"}:
+        return 100
+
+    completed_weight = 0
+    for stage_name in SUBTITLE_JOB_PROGRESS_ORDER:
+        if stage_name == state:
+            break
+        completed_weight += SUBTITLE_JOB_PROGRESS_WEIGHTS.get(stage_name, 0)
+
+    current_weight = SUBTITLE_JOB_PROGRESS_WEIGHTS.get(state)
+    if current_weight is None:
+        return max(0, min(99, completed_weight))
+
+    if stage_progress_percent is None:
+        return max(0, min(99, completed_weight))
+
+    bounded_stage_progress = max(0, min(100, int(stage_progress_percent)))
+    weighted = completed_weight + round((current_weight * bounded_stage_progress) / 100)
+    return max(0, min(99, weighted))
+
+
+def cleanup_expired_subtitle_jobs(now_epoch: float | None = None) -> None:
+    current = time.time() if now_epoch is None else now_epoch
+    with SUBTITLE_JOB_LOCK:
+        expired_job_ids = [
+            job_id
+            for job_id, entry in SUBTITLE_GENERATE_JOBS.items()
+            if current - float(entry.get("updatedAtEpoch") or current) > SUBTITLE_JOB_RETENTION_SECONDS
+        ]
+        for job_id in expired_job_ids:
+            SUBTITLE_GENERATE_JOBS.pop(job_id, None)
+
+
+def build_subtitle_job_payload(entry: dict[str, Any]) -> dict[str, Any]:
+    now_epoch = time.time()
+    started_at_epoch = float(entry.get("startedAtEpoch") or now_epoch)
+    return {
+        "id": entry["id"],
+        "state": entry["state"],
+        "activeStage": entry.get("activeStage"),
+        "stageLabel": subtitle_job_stage_label(str(entry.get("state") or "")),
+        "progressPercent": int(entry.get("progressPercent") or 0),
+        "stageProgressPercent": entry.get("stageProgressPercent"),
+        "detail": entry.get("detail"),
+        "message": entry.get("message"),
+        "videoPath": entry.get("videoPath"),
+        "subtitlePath": entry.get("subtitlePath"),
+        "outputPath": entry.get("outputPath"),
+        "startedAt": entry.get("startedAt"),
+        "updatedAt": entry.get("updatedAt"),
+        "elapsedSeconds": round(max(0.0, now_epoch - started_at_epoch), 1),
+        "error": entry.get("error"),
+        "macService": entry.get("macService"),
+        "transcription": entry.get("transcription"),
+    }
+
+
+def create_subtitle_generate_job(video_path: str, language: str | None) -> dict[str, Any]:
+    now_epoch = time.time()
+    now_iso = utc_now_iso()
+    job_id = f"subgen_{time.strftime('%Y%m%d_%H%M%S', time.gmtime(now_epoch))}_{uuid4().hex[:6]}"
+    entry = {
+        "id": job_id,
+        "state": "queued",
+        "activeStage": None,
+        "progressPercent": 0,
+        "stageProgressPercent": 0,
+        "detail": "Waiting for the server to start subtitle generation.",
+        "message": None,
+        "videoPath": video_path,
+        "subtitlePath": None,
+        "outputPath": None,
+        "startedAt": now_iso,
+        "startedAtEpoch": now_epoch,
+        "updatedAt": now_iso,
+        "updatedAtEpoch": now_epoch,
+        "error": None,
+        "macService": None,
+        "transcription": {
+            "requestedLanguage": language,
+            "detectedLanguage": None,
+            "segmentCount": None,
+            "model": None,
+        },
+    }
+    with SUBTITLE_JOB_LOCK:
+        cleanup_expired_subtitle_jobs(now_epoch)
+        SUBTITLE_GENERATE_JOBS[job_id] = entry
+    return build_subtitle_job_payload(entry)
+
+
+def get_subtitle_generate_job(job_id: str) -> dict[str, Any] | None:
+    cleanup_expired_subtitle_jobs()
+    with SUBTITLE_JOB_LOCK:
+        entry = SUBTITLE_GENERATE_JOBS.get(job_id)
+        if not entry:
+            return None
+        return build_subtitle_job_payload(dict(entry))
+
+
+def update_subtitle_generate_job(
+    job_id: str,
+    *,
+    state: Any = UNSET,
+    progress_percent: Any = UNSET,
+    stage_progress_percent: Any = UNSET,
+    detail: Any = UNSET,
+    message: Any = UNSET,
+    subtitle_path: Any = UNSET,
+    output_path: Any = UNSET,
+    error: Any = UNSET,
+    mac_service: Any = UNSET,
+    transcription: Any = UNSET,
+) -> dict[str, Any] | None:
+    now_epoch = time.time()
+    now_iso = utc_now_iso()
+    with SUBTITLE_JOB_LOCK:
+        entry = SUBTITLE_GENERATE_JOBS.get(job_id)
+        if not entry:
+            return None
+
+        if state is not UNSET:
+            entry["state"] = state
+            if isinstance(state, str) and state in SUBTITLE_JOB_PROGRESS_WEIGHTS:
+                entry["activeStage"] = state
+        if progress_percent is not UNSET:
+            entry["progressPercent"] = max(0, min(100, int(progress_percent)))
+        if stage_progress_percent is not UNSET:
+            entry["stageProgressPercent"] = None if stage_progress_percent is None else max(0, min(100, int(stage_progress_percent)))
+        if detail is not UNSET:
+            entry["detail"] = detail
+        if message is not UNSET:
+            entry["message"] = message
+        if subtitle_path is not UNSET:
+            entry["subtitlePath"] = subtitle_path
+        if output_path is not UNSET:
+            entry["outputPath"] = output_path
+        if error is not UNSET:
+            entry["error"] = error
+        if mac_service is not UNSET:
+            entry["macService"] = mac_service
+        if transcription is not UNSET:
+            existing_transcription = dict(entry.get("transcription") or {})
+            if isinstance(transcription, dict):
+                existing_transcription.update(transcription)
+            else:
+                existing_transcription = transcription
+            entry["transcription"] = existing_transcription
+
+        entry["updatedAt"] = now_iso
+        entry["updatedAtEpoch"] = now_epoch
+        return build_subtitle_job_payload(dict(entry))
+
+
+def fail_subtitle_generate_job(job_id: str, error_message: str) -> dict[str, Any] | None:
+    with SUBTITLE_JOB_LOCK:
+        current_progress = int((SUBTITLE_GENERATE_JOBS.get(job_id) or {}).get("progressPercent") or 0)
+    return update_subtitle_generate_job(
+        job_id,
+        state="failed",
+        progress_percent=current_progress,
+        stage_progress_percent=None,
+        detail=error_message,
+        message=None,
+        error=error_message,
+    )
+
+
+def format_media_duration(seconds: float | int | None) -> str:
+    if seconds is None:
+        return "0:00"
+
+    total_seconds = max(0, int(round(float(seconds))))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def format_byte_count(num_bytes: int | None) -> str:
+    if num_bytes is None:
+        return "0 B"
+
+    value = float(max(0, num_bytes))
+    units = ["B", "KB", "MB", "GB", "TB"]
+    unit_index = 0
+    while value >= 1024 and unit_index < len(units) - 1:
+        value /= 1024
+        unit_index += 1
+
+    if unit_index == 0:
+        return f"{int(value)} {units[unit_index]}"
+    if value >= 10 or unit_index >= 2:
+        return f"{value:.1f} {units[unit_index]}"
+    return f"{value:.2f} {units[unit_index]}"
+
+
+def parse_ffmpeg_timecode(value: str) -> float | None:
+    parts = value.strip().split(":")
+    if len(parts) != 3:
+        return None
+
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = float(parts[2])
+    except ValueError:
+        return None
+
+    return (hours * 3600) + (minutes * 60) + seconds
+
+
+def pipe_reader(
+    pipe: Any,
+    output_lines: list[str],
+    output_queue: queue.Queue[str | None] | None = None,
+) -> None:
+    try:
+        for raw_line in iter(pipe.readline, ""):
+            output_lines.append(raw_line)
+            if output_queue is not None:
+                output_queue.put(raw_line)
+    finally:
+        try:
+            pipe.close()
+        finally:
+            if output_queue is not None:
+                output_queue.put(None)
+
+
+def run_process_with_output_lines(
+    cmd: list[str],
+    *,
+    timeout: float,
+    on_stdout_line: Callable[[str], None] | None = None,
+    merge_stderr_into_stdout: bool = False,
+) -> tuple[int, str, str]:
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=(subprocess.STDOUT if merge_stderr_into_stdout else subprocess.PIPE),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+
+    if process.stdout is None:
+        raise RuntimeError("Could not capture process stdout.")
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    stdout_queue: queue.Queue[str | None] = queue.Queue()
+    stdout_thread = threading.Thread(
+        target=pipe_reader,
+        args=(process.stdout, stdout_lines, stdout_queue),
+        daemon=True,
+    )
+    stdout_thread.start()
+
+    stderr_thread: threading.Thread | None = None
+    if not merge_stderr_into_stdout:
+        if process.stderr is None:
+            raise RuntimeError("Could not capture process stderr.")
+        stderr_thread = threading.Thread(
+            target=pipe_reader,
+            args=(process.stderr, stderr_lines, None),
+            daemon=True,
+        )
+        stderr_thread.start()
+
+    deadline = time.monotonic() + timeout
+    stdout_closed = False
+
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                process.kill()
+                stdout_thread.join(timeout=1)
+                if stderr_thread is not None:
+                    stderr_thread.join(timeout=1)
+                stdout_text = "".join(stdout_lines)
+                stderr_text = "".join(stderr_lines)
+                raise subprocess.TimeoutExpired(cmd, timeout, output=stdout_text, stderr=stderr_text)
+
+            try:
+                item = stdout_queue.get(timeout=min(0.25, remaining))
+            except queue.Empty:
+                if process.poll() is not None and not stdout_thread.is_alive():
+                    break
+                continue
+
+            if item is None:
+                stdout_closed = True
+                if process.poll() is not None:
+                    break
+                continue
+
+            if on_stdout_line is not None:
+                on_stdout_line(item.rstrip("\r\n"))
+
+            if stdout_closed and process.poll() is not None and stdout_queue.empty():
+                break
+
+        return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+    finally:
+        stdout_thread.join(timeout=1)
+        if stderr_thread is not None:
+            stderr_thread.join(timeout=1)
+
+    return return_code, "".join(stdout_lines), "".join(stderr_lines)
+
+
 def post_binary_json(
     url: str,
     body: bytes,
@@ -293,6 +649,9 @@ def post_binary_json(
     content_type: str,
     timeout: float,
     headers: dict[str, str] | None = None,
+    on_upload_progress: Callable[[int, int], None] | None = None,
+    on_processing_started: Callable[[], None] | None = None,
+    on_response_started: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     request_headers = {
         "Accept": "application/json",
@@ -301,16 +660,79 @@ def post_binary_json(
     if headers:
         request_headers.update(headers)
 
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers=request_headers,
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    if not any((on_upload_progress, on_processing_started, on_response_started)):
+        request = urllib.request.Request(
+            url,
+            data=body,
+            headers=request_headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            payload = response.read().decode(charset)
+        return json.loads(payload) if payload else {}
+
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise urllib.error.URLError(f"Invalid URL: {url}")
+
+    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    connection = connection_class(parsed.hostname, port, timeout=timeout)
+    response: http.client.HTTPResponse | None = None
+
+    try:
+        connection.putrequest("POST", path)
+        for key, value in request_headers.items():
+            connection.putheader(key, value)
+        connection.putheader("Content-Length", str(len(body)))
+        connection.endheaders()
+
+        total_bytes = len(body)
+        if total_bytes <= 0:
+            if on_upload_progress:
+                on_upload_progress(0, 0)
+        else:
+            bytes_sent = 0
+            chunk_size = 64 * 1024
+            for offset in range(0, total_bytes, chunk_size):
+                chunk = body[offset:offset + chunk_size]
+                connection.send(chunk)
+                bytes_sent += len(chunk)
+                if on_upload_progress:
+                    on_upload_progress(bytes_sent, total_bytes)
+
+        if on_processing_started:
+            on_processing_started()
+
+        response = connection.getresponse()
+
+        if on_response_started:
+            on_response_started()
+
+        payload_bytes = response.read()
+        if not (200 <= response.status < 300):
+            raise urllib.error.HTTPError(
+                url,
+                response.status,
+                response.reason,
+                response.headers,
+                None,
+            )
+
         charset = response.headers.get_content_charset() or "utf-8"
-        payload = response.read().decode(charset)
-    return json.loads(payload) if payload else {}
+        payload = payload_bytes.decode(charset)
+        return json.loads(payload) if payload else {}
+    except urllib.error.HTTPError:
+        raise
+    except (OSError, http.client.HTTPException, TimeoutError) as exc:
+        raise urllib.error.URLError(exc) from exc
+    finally:
+        connection.close()
 
 
 def require_online_mac_service() -> dict[str, Any]:
@@ -347,6 +769,40 @@ def subtitle_language_tag(language: str | None) -> str:
     if len(normalized) >= 3:
         return normalized[:3]
     return normalized
+
+
+def probe_media_duration_seconds(media_path: Path) -> float | None:
+    try:
+        ffprobe_path = resolve_tool_path("ffprobe", FFPROBE_CANDIDATE_PATHS)
+    except FileNotFoundError:
+        return None
+
+    cmd = [
+        ffprobe_path,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "json",
+        str(media_path),
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    try:
+        payload = json.loads(result.stdout or "{}")
+        duration_value = float(payload.get("format", {}).get("duration") or 0)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+    return duration_value if duration_value > 0 else None
 
 
 def format_log_value(value: Any) -> str:
@@ -1388,12 +1844,24 @@ def download_subtitles_for_video(
     return {"downloaded": 0, "subtitlePath": None, "output": output}
 
 
-def extract_audio_for_transcription(video_path: Path, work_dir: Path) -> Path:
+def extract_audio_for_transcription(
+    video_path: Path,
+    work_dir: Path,
+    progress_callback: Callable[[int | None, str], None] | None = None,
+) -> Path:
     ffmpeg_path = resolve_tool_path("ffmpeg", FFMPEG_CANDIDATE_PATHS)
+    duration_seconds = probe_media_duration_seconds(video_path)
     audio_path = work_dir / f"{video_path.stem}.wav"
     cmd = [
         ffmpeg_path,
         "-y",
+        "-hide_banner",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-progress",
+        "pipe:1",
+        "-nostats",
         "-i",
         str(video_path),
         "-vn",
@@ -1406,16 +1874,68 @@ def extract_audio_for_transcription(video_path: Path, work_dir: Path) -> Path:
         str(audio_path),
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg audio extraction failed: {(result.stderr or '').strip()[-500:]}")
+    if progress_callback:
+        if duration_seconds:
+            progress_callback(0, f"Extracting audio: 0:00 of {format_media_duration(duration_seconds)}")
+        else:
+            progress_callback(0, "Extracting mono 16 kHz audio from the source video.")
+
+    last_progress_percent = -1
+    last_processed_seconds = 0.0
+
+    def handle_progress_line(line: str) -> None:
+        nonlocal last_progress_percent, last_processed_seconds
+        if not line.startswith("out_time="):
+            return
+
+        processed_seconds = parse_ffmpeg_timecode(line.partition("=")[2])
+        if processed_seconds is None:
+            return
+
+        last_processed_seconds = processed_seconds
+        if duration_seconds:
+            stage_progress = max(0, min(100, round((processed_seconds / duration_seconds) * 100)))
+            if stage_progress == last_progress_percent:
+                return
+            last_progress_percent = stage_progress
+            if progress_callback:
+                progress_callback(
+                    stage_progress,
+                    f"Extracting audio: {format_media_duration(processed_seconds)} of {format_media_duration(duration_seconds)}",
+                )
+        elif progress_callback:
+            progress_callback(
+                None,
+                f"Extracting audio: {format_media_duration(processed_seconds)} processed",
+            )
+
+    return_code, _, stderr_text = run_process_with_output_lines(
+        cmd,
+        timeout=300,
+        on_stdout_line=handle_progress_line,
+    )
+    if return_code != 0:
+        raise RuntimeError(f"ffmpeg audio extraction failed: {(stderr_text or '').strip()[-500:]}")
     if not audio_path.exists():
         raise FileNotFoundError("ffmpeg did not produce an audio extraction file.")
+
+    if progress_callback:
+        if duration_seconds:
+            progress_callback(100, f"Extracting audio: {format_media_duration(duration_seconds)} of {format_media_duration(duration_seconds)}")
+        elif last_processed_seconds > 0:
+            progress_callback(100, f"Extracted audio: {format_media_duration(last_processed_seconds)} total")
+        else:
+            progress_callback(100, "Audio extraction complete.")
 
     return audio_path
 
 
-def merge_generated_subtitles_into_video(video_path: Path, subtitle_path: Path, language: str | None) -> Path:
+def merge_generated_subtitles_into_video(
+    video_path: Path,
+    subtitle_path: Path,
+    language: str | None,
+    progress_callback: Callable[[int | None, str], None] | None = None,
+) -> Path:
     suffix = video_path.suffix.lower()
     output_suffix = ".mkv" if suffix == ".mp4" else suffix
     output_path = build_available_destination_path(
@@ -1440,16 +1960,49 @@ def merge_generated_subtitles_into_video(video_path: Path, subtitle_path: Path, 
     else:
         raise ValueError(f"Unsupported video container for subtitle generation: {video_path.suffix}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        raise RuntimeError(f"mkvmerge subtitle mux failed: {(result.stderr or result.stdout or '').strip()[-500:]}")
+    if progress_callback:
+        progress_callback(0, "Preparing a new video file with the AI Generated subtitle track.")
+
+    last_progress_percent = -1
+    progress_pattern = re.compile(r"(?:^|\s)(?:Progress:|#GUI#progress)\s*(\d{1,3})%")
+
+    def handle_progress_line(line: str) -> None:
+        nonlocal last_progress_percent
+        match = progress_pattern.search(line)
+        if not match:
+            return
+
+        progress_percent = max(0, min(100, int(match.group(1))))
+        if progress_percent == last_progress_percent:
+            return
+
+        last_progress_percent = progress_percent
+        if progress_callback:
+            progress_callback(progress_percent, f"Merging into new video: {progress_percent}%")
+
+    return_code, stdout_text, stderr_text = run_process_with_output_lines(
+        cmd,
+        timeout=600,
+        on_stdout_line=handle_progress_line,
+        merge_stderr_into_stdout=True,
+    )
+    combined_output = (stdout_text or stderr_text or "").strip()
+    if return_code != 0:
+        raise RuntimeError(f"mkvmerge subtitle mux failed: {combined_output[-500:]}")
     if not output_path.exists():
         raise FileNotFoundError("Subtitle muxing did not produce an output file.")
+
+    if progress_callback:
+        progress_callback(100, "Finished merging subtitles into a new video file.")
 
     return output_path
 
 
-def generate_subtitles_via_mac_service(video_path: Path, language: str | None = None) -> dict[str, Any]:
+def generate_subtitles_via_mac_service(
+    video_path: Path,
+    language: str | None = None,
+    progress_callback: Callable[[str, int, str | None, int | None], None] | None = None,
+) -> dict[str, Any]:
     mac_service = require_online_mac_service()
     mac_base_url = str(mac_service.get("baseUrl") or "").rstrip("/")
     if not mac_base_url:
@@ -1458,9 +2011,39 @@ def generate_subtitles_via_mac_service(video_path: Path, language: str | None = 
     normalized_language = (language or "").strip() or None
     resolved_root = get_download_root().resolve()
 
+    def publish_progress(
+        state: str,
+        detail: str,
+        stage_progress_percent: int | None = None,
+    ) -> None:
+        if progress_callback:
+            progress_callback(
+                state,
+                subtitle_job_progress_percent(state, stage_progress_percent),
+                detail,
+                stage_progress_percent,
+            )
+
     with tempfile.TemporaryDirectory(prefix="generated-subs-") as temp_dir:
         work_dir = Path(temp_dir)
-        audio_path = extract_audio_for_transcription(video_path, work_dir)
+        audio_path = extract_audio_for_transcription(
+            video_path,
+            work_dir,
+            progress_callback=(
+                lambda stage_progress_percent, detail: publish_progress(
+                    "extracting_audio",
+                    detail,
+                    stage_progress_percent,
+                )
+            ) if progress_callback else None,
+        )
+
+        if progress_callback:
+            publish_progress(
+                "uploading_audio",
+                f"Uploading {audio_path.name} to the Mac helper.",
+                0,
+            )
 
         params = {
             "filename": audio_path.name,
@@ -1475,6 +2058,31 @@ def generate_subtitles_via_mac_service(video_path: Path, language: str | None = 
             content_type="audio/wav",
             timeout=SERVICE_TRANSCRIPTION_TIMEOUT_SECONDS,
             headers={"X-File-Name": audio_path.name},
+            on_upload_progress=(
+                lambda sent, total: publish_progress(
+                    "uploading_audio",
+                    (
+                        f"Uploading audio: {format_byte_count(sent)} of {format_byte_count(total)}"
+                        if total > 0
+                        else "Uploading audio to the Mac helper."
+                    ),
+                    round((sent / total) * 100) if total > 0 else 100,
+                )
+            ) if progress_callback else None,
+            on_processing_started=(
+                lambda: publish_progress(
+                    "transcribing",
+                    "The Mac helper is generating subtitles from the uploaded audio.",
+                    None,
+                )
+            ) if progress_callback else None,
+            on_response_started=(
+                lambda: publish_progress(
+                    "receiving_srt",
+                    "Receiving generated subtitle data from the Mac helper.",
+                    None,
+                )
+            ) if progress_callback else None,
         )
 
     subtitle_payload = response.get("subtitle") or {}
@@ -1488,8 +2096,26 @@ def generate_subtitles_via_mac_service(video_path: Path, language: str | None = 
     )
     subtitle_path.write_text(srt_text, encoding="utf-8")
 
+    if progress_callback:
+        publish_progress(
+            "muxing",
+            f"Saved {subtitle_path.name}. Preparing the new video file.",
+            None,
+        )
+
     mux_language = normalized_language or subtitle_payload.get("detectedLanguage")
-    output_path = merge_generated_subtitles_into_video(video_path, subtitle_path, mux_language)
+    output_path = merge_generated_subtitles_into_video(
+        video_path,
+        subtitle_path,
+        mux_language,
+        progress_callback=(
+            lambda stage_progress_percent, detail: publish_progress(
+                "muxing",
+                detail,
+                stage_progress_percent,
+            )
+        ) if progress_callback else None,
+    )
 
     return {
         "status": "ok",
@@ -1509,6 +2135,57 @@ def generate_subtitles_via_mac_service(video_path: Path, language: str | None = 
             "model": transcription_payload.get("model"),
         },
     }
+
+
+def run_subtitle_generate_job(
+    job_id: str,
+    video_relative_path: str,
+    video_path: Path,
+    language: str | None,
+) -> None:
+    def report_progress(
+        state: str,
+        progress_percent: int,
+        detail: str | None = None,
+        stage_progress_percent: int | None = None,
+    ) -> None:
+        update_subtitle_generate_job(
+            job_id,
+            state=state,
+            progress_percent=progress_percent,
+            stage_progress_percent=stage_progress_percent,
+            detail=detail,
+        )
+
+    try:
+        result = generate_subtitles_via_mac_service(
+            video_path,
+            language=language,
+            progress_callback=report_progress,
+        )
+        update_subtitle_generate_job(
+            job_id,
+            state="completed",
+            progress_percent=100,
+            stage_progress_percent=100,
+            detail=result.get("message") or "Generated subtitles and muxed them into a copy.",
+            message=result.get("message"),
+            subtitle_path=result.get("subtitlePath"),
+            output_path=result.get("outputPath"),
+            error=None,
+            mac_service=result.get("macService"),
+            transcription=result.get("transcription"),
+        )
+    except ValueError as exc:
+        fail_subtitle_generate_job(job_id, str(exc))
+    except urllib.error.HTTPError as exc:
+        fail_subtitle_generate_job(job_id, f"Mac subtitle service returned HTTP {exc.code}.")
+    except urllib.error.URLError as exc:
+        fail_subtitle_generate_job(job_id, f"Could not reach the Mac subtitle service: {exc.reason}")
+    except FileNotFoundError as exc:
+        fail_subtitle_generate_job(job_id, str(exc))
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        fail_subtitle_generate_job(job_id, str(exc))
 
 
 def merge_subtitles_into_video(video_path: Path, subtitle_path: Path) -> Path:
@@ -2247,6 +2924,20 @@ class ApiHandler(BaseHTTPRequestHandler):
                 json_response(self, HTTPStatus.OK, perform_search(query))
             return
 
+        if parsed.path.startswith("/api/v1/subtitles/generate/jobs/"):
+            job_id = parsed.path.rsplit("/", 1)[-1].strip()
+            if not job_id:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Missing subtitle generation job id"})
+                return
+
+            payload = get_subtitle_generate_job(job_id)
+            if payload is None:
+                json_response(self, HTTPStatus.NOT_FOUND, {"error": f"Unknown subtitle generation job: {job_id}"})
+                return
+
+            json_response(self, HTTPStatus.OK, {"status": "ok", "job": payload})
+            return
+
         if parsed.path.startswith("/api/v1/downloads/"):
             gid = parsed.path.rsplit("/", 1)[-1].strip()
             if not gid:
@@ -2305,6 +2996,37 @@ class ApiHandler(BaseHTTPRequestHandler):
                     },
                 },
             )
+            return
+
+        if parsed.path == "/api/v1/subtitles/generate/jobs":
+            try:
+                body = self.read_json_body()
+            except json.JSONDecodeError:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON body"})
+                return
+
+            try:
+                video_relative = body.get("videoPath") or body.get("path")
+                video_path = resolve_download_path(video_relative)
+                if not video_path.is_file():
+                    json_response(self, HTTPStatus.NOT_FOUND, {"error": f"Video not found: {video_relative}"})
+                    return
+                language = (body.get("language") or "").strip() or None
+                job = create_subtitle_generate_job(str(video_relative), language)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            except FileNotFoundError as exc:
+                json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                return
+
+            threading.Thread(
+                target=run_subtitle_generate_job,
+                args=(job["id"], str(video_relative), video_path, language),
+                daemon=True,
+            ).start()
+
+            json_response(self, HTTPStatus.ACCEPTED, {"status": "accepted", "job": job})
             return
 
         if parsed.path == "/api/v1/system/restart":
