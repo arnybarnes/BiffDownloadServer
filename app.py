@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,6 +27,39 @@ SEARCH_RESULT_CACHE: dict[str, str] = {}
 DEFAULT_DOWNLOAD_ROOT = Path(r"C:\Users\arnyb\Downloads")
 TEMP_DOWNLOAD_ROOT = Path(r"C:\Users\arnyb\Downloads\temp")
 VIDEO_EXTENSIONS = {".mkv", ".mp4"}
+SERVICE_REGISTRY_LOCK = threading.Lock()
+SERVICE_HEARTBEATS: dict[str, dict[str, Any]] = {}
+SERVICE_HEARTBEAT_STALE_AFTER_SECONDS = 45.0
+SERVICE_HEALTHCHECK_TIMEOUT_SECONDS = 1.5
+SERVICE_TRANSCRIPTION_TIMEOUT_SECONDS = 900.0
+FFMPEG_CANDIDATE_PATHS = [
+    Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
+]
+MKVMERGE_CANDIDATE_PATHS = [
+    Path(r"C:\Program Files\MKVToolNix\mkvmerge.exe"),
+]
+SUBTITLE_LANGUAGE_TAGS = {
+    "en": "eng",
+    "english": "eng",
+    "es": "spa",
+    "spanish": "spa",
+    "fr": "fre",
+    "french": "fre",
+    "de": "ger",
+    "german": "ger",
+    "it": "ita",
+    "italian": "ita",
+    "pt": "por",
+    "portuguese": "por",
+    "nl": "dut",
+    "dutch": "dut",
+    "ja": "jpn",
+    "japanese": "jpn",
+    "ko": "kor",
+    "korean": "kor",
+    "zh": "chi",
+    "chinese": "chi",
+}
 
 
 @dataclass
@@ -93,6 +127,226 @@ DOWNLOAD_STATUS_KEYS = [
 ]
 DOWNLOAD_MONITOR_INTERVAL_SECONDS = 2.0
 DOWNLOAD_LOG_LOCK = threading.Lock()
+
+
+def utc_now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def normalize_service_key(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def parse_service_url(value: Any, field_name: str) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    parsed = urllib.parse.urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{field_name} must be an absolute http(s) URL.")
+
+    return text.rstrip("/")
+
+
+def parse_service_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    items: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        items.append(text)
+    return items
+
+
+def fetch_json_url(url: str, timeout: float) -> dict[str, Any]:
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        payload = response.read().decode(charset)
+    return json.loads(payload) if payload else {}
+
+
+def record_service_heartbeat(payload: dict[str, Any]) -> dict[str, Any]:
+    service = normalize_service_key(payload.get("service"))
+    if not service:
+        raise ValueError("service is required.")
+
+    hostname = str(payload.get("hostname") or "").strip()
+    if not hostname:
+        raise ValueError("hostname is required.")
+
+    base_url = parse_service_url(payload.get("baseUrl"), "baseUrl")
+    health_url = parse_service_url(payload.get("healthUrl"), "healthUrl")
+    if not base_url and not health_url:
+        raise ValueError("Provide baseUrl or healthUrl.")
+
+    if health_url is None and base_url is not None:
+        health_url = f"{base_url}/health"
+
+    port_value = payload.get("port")
+    port = int(port_value) if port_value not in {None, ""} else None
+    if port is not None and not (1 <= port <= 65535):
+        raise ValueError("port must be between 1 and 65535.")
+
+    version = str(payload.get("version") or "").strip() or None
+    instance_id = str(payload.get("instanceId") or "").strip() or None
+    addresses = parse_service_string_list(payload.get("addresses"))
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    now_epoch = time.time()
+    now_iso = utc_now_iso()
+
+    with SERVICE_REGISTRY_LOCK:
+        existing = SERVICE_HEARTBEATS.get(service, {})
+        entry = {
+            "service": service,
+            "hostname": hostname,
+            "instanceId": instance_id,
+            "baseUrl": base_url,
+            "healthUrl": health_url,
+            "port": port,
+            "version": version,
+            "addresses": addresses,
+            "meta": meta,
+            "registeredAt": existing.get("registeredAt") or now_iso,
+            "lastSeen": now_iso,
+            "lastSeenEpoch": now_epoch,
+        }
+        SERVICE_HEARTBEATS[service] = entry
+
+    return entry
+
+
+def probe_registered_service_health(entry: dict[str, Any]) -> tuple[bool | None, dict[str, Any] | None, str | None]:
+    health_url = entry.get("healthUrl")
+    if not health_url:
+        base_url = entry.get("baseUrl")
+        if base_url:
+            health_url = f"{base_url}/health"
+
+    if not health_url:
+        return None, None, "No health URL is registered."
+
+    try:
+        return True, fetch_json_url(health_url, timeout=SERVICE_HEALTHCHECK_TIMEOUT_SECONDS), None
+    except urllib.error.HTTPError as exc:
+        return False, None, f"Health endpoint returned HTTP {exc.code}."
+    except (TimeoutError, ConnectionError, OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        return False, None, str(exc)
+
+
+def build_registered_service_payload(service_name: str) -> dict[str, Any]:
+    service_key = normalize_service_key(service_name)
+    with SERVICE_REGISTRY_LOCK:
+        entry = dict(SERVICE_HEARTBEATS.get(service_key, {}))
+
+    if not entry:
+        return {
+            "status": "degraded",
+            "service": {
+                "name": service_key,
+                "registered": False,
+                "online": False,
+                "heartbeatFresh": False,
+            },
+        }
+
+    age_seconds = max(0.0, time.time() - float(entry.get("lastSeenEpoch") or 0.0))
+    heartbeat_fresh = age_seconds <= SERVICE_HEARTBEAT_STALE_AFTER_SECONDS
+    health_reachable, health_payload, health_error = probe_registered_service_health(entry)
+    online = bool(health_reachable) if health_reachable is not None else heartbeat_fresh
+
+    return {
+        "status": "ok" if online else "degraded",
+        "service": {
+            "name": service_key,
+            "registered": True,
+            "online": online,
+            "heartbeatFresh": heartbeat_fresh,
+            "lastSeen": entry.get("lastSeen"),
+            "lastSeenAgeSeconds": round(age_seconds, 1),
+            "staleAfterSeconds": SERVICE_HEARTBEAT_STALE_AFTER_SECONDS,
+            "hostname": entry.get("hostname"),
+            "instanceId": entry.get("instanceId"),
+            "version": entry.get("version"),
+            "baseUrl": entry.get("baseUrl"),
+            "healthUrl": entry.get("healthUrl"),
+            "port": entry.get("port"),
+            "addresses": entry.get("addresses") or [],
+            "meta": entry.get("meta") or {},
+            "healthReachable": health_reachable,
+            "health": health_payload,
+            "healthError": health_error,
+        },
+    }
+
+
+def post_binary_json(
+    url: str,
+    body: bytes,
+    *,
+    content_type: str,
+    timeout: float,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    request_headers = {
+        "Accept": "application/json",
+        "Content-Type": content_type,
+    }
+    if headers:
+        request_headers.update(headers)
+
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers=request_headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        payload = response.read().decode(charset)
+    return json.loads(payload) if payload else {}
+
+
+def require_online_mac_service() -> dict[str, Any]:
+    payload = build_registered_service_payload("mac-api")
+    service = payload.get("service") or {}
+    if not service.get("registered"):
+        raise RuntimeError("The Mac subtitle service has not registered with the API yet.")
+    if not service.get("online"):
+        raise RuntimeError(service.get("healthError") or "The Mac subtitle service is offline.")
+    if not service.get("baseUrl"):
+        raise RuntimeError("The Mac subtitle service did not publish a base URL.")
+    return service
+
+
+def resolve_tool_path(command_name: str, candidate_paths: list[Path]) -> str:
+    resolved = shutil.which(command_name)
+    if resolved:
+        return resolved
+
+    for candidate in candidate_paths:
+        if candidate.exists():
+            return str(candidate)
+
+    checked = ", ".join(str(path) for path in candidate_paths)
+    raise FileNotFoundError(f"Could not find {command_name}. Checked PATH and: {checked}")
+
+
+def subtitle_language_tag(language: str | None) -> str:
+    normalized = (language or "").strip().lower()
+    if not normalized:
+        return "eng"
+    if normalized in SUBTITLE_LANGUAGE_TAGS:
+        return SUBTITLE_LANGUAGE_TAGS[normalized]
+    if len(normalized) >= 3:
+        return normalized[:3]
+    return normalized
 
 
 def format_log_value(value: Any) -> str:
@@ -1134,6 +1388,129 @@ def download_subtitles_for_video(
     return {"downloaded": 0, "subtitlePath": None, "output": output}
 
 
+def extract_audio_for_transcription(video_path: Path, work_dir: Path) -> Path:
+    ffmpeg_path = resolve_tool_path("ffmpeg", FFMPEG_CANDIDATE_PATHS)
+    audio_path = work_dir / f"{video_path.stem}.wav"
+    cmd = [
+        ffmpeg_path,
+        "-y",
+        "-i",
+        str(video_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_s16le",
+        str(audio_path),
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg audio extraction failed: {(result.stderr or '').strip()[-500:]}")
+    if not audio_path.exists():
+        raise FileNotFoundError("ffmpeg did not produce an audio extraction file.")
+
+    return audio_path
+
+
+def merge_generated_subtitles_into_video(video_path: Path, subtitle_path: Path, language: str | None) -> Path:
+    suffix = video_path.suffix.lower()
+    output_suffix = ".mkv" if suffix == ".mp4" else suffix
+    output_path = build_available_destination_path(
+        video_path.with_name(f"{video_path.stem}_generated_subs{output_suffix}")
+    )
+
+    if suffix in {".mkv", ".mp4"}:
+        mkvmerge_path = resolve_tool_path("mkvmerge", MKVMERGE_CANDIDATE_PATHS)
+        cmd = [
+            mkvmerge_path,
+            "-o",
+            str(output_path),
+            str(video_path),
+            "--language",
+            f"0:{subtitle_language_tag(language)}",
+            "--track-name",
+            "0:AI Generated",
+            "--default-track",
+            "0:yes",
+            str(subtitle_path),
+        ]
+    else:
+        raise ValueError(f"Unsupported video container for subtitle generation: {video_path.suffix}")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0:
+        raise RuntimeError(f"mkvmerge subtitle mux failed: {(result.stderr or result.stdout or '').strip()[-500:]}")
+    if not output_path.exists():
+        raise FileNotFoundError("Subtitle muxing did not produce an output file.")
+
+    return output_path
+
+
+def generate_subtitles_via_mac_service(video_path: Path, language: str | None = None) -> dict[str, Any]:
+    mac_service = require_online_mac_service()
+    mac_base_url = str(mac_service.get("baseUrl") or "").rstrip("/")
+    if not mac_base_url:
+        raise RuntimeError("The Mac subtitle service did not publish a usable base URL.")
+
+    normalized_language = (language or "").strip() or None
+    resolved_root = get_download_root().resolve()
+
+    with tempfile.TemporaryDirectory(prefix="generated-subs-") as temp_dir:
+        work_dir = Path(temp_dir)
+        audio_path = extract_audio_for_transcription(video_path, work_dir)
+
+        params = {
+            "filename": audio_path.name,
+        }
+        if normalized_language:
+            params["language"] = normalized_language
+        query = urllib.parse.urlencode(params)
+        url = f"{mac_base_url}/api/v1/transcriptions/srt?{query}"
+        response = post_binary_json(
+            url,
+            audio_path.read_bytes(),
+            content_type="audio/wav",
+            timeout=SERVICE_TRANSCRIPTION_TIMEOUT_SECONDS,
+            headers={"X-File-Name": audio_path.name},
+        )
+
+    subtitle_payload = response.get("subtitle") or {}
+    transcription_payload = response.get("transcription") or {}
+    srt_text = subtitle_payload.get("srt")
+    if not isinstance(srt_text, str) or not srt_text.strip():
+        raise RuntimeError("The Mac subtitle service returned no SRT content.")
+
+    subtitle_path = build_available_destination_path(
+        video_path.with_name(f"{video_path.stem}.generated.srt")
+    )
+    subtitle_path.write_text(srt_text, encoding="utf-8")
+
+    mux_language = normalized_language or subtitle_payload.get("detectedLanguage")
+    output_path = merge_generated_subtitles_into_video(video_path, subtitle_path, mux_language)
+
+    return {
+        "status": "ok",
+        "message": "Generated subtitles and muxed them into a copy.",
+        "subtitlePath": str(subtitle_path.relative_to(resolved_root)),
+        "outputPath": str(output_path.relative_to(resolved_root)),
+        "macService": {
+            "hostname": mac_service.get("hostname"),
+            "baseUrl": mac_service.get("baseUrl"),
+            "healthUrl": mac_service.get("healthUrl"),
+            "version": mac_service.get("version"),
+        },
+        "transcription": {
+            "requestedLanguage": normalized_language,
+            "detectedLanguage": subtitle_payload.get("detectedLanguage"),
+            "segmentCount": subtitle_payload.get("segmentCount"),
+            "model": transcription_payload.get("model"),
+        },
+    }
+
+
 def merge_subtitles_into_video(video_path: Path, subtitle_path: Path) -> Path:
     output_path = build_available_destination_path(
         video_path.with_name(f"{video_path.stem}_with_subs{video_path.suffix}")
@@ -1845,6 +2222,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             json_response(self, HTTPStatus.OK, build_api_v1_system_payload())
             return
 
+        if parsed.path == "/api/v1/services/mac-api":
+            json_response(self, HTTPStatus.OK, build_registered_service_payload("mac-api"))
+            return
+
         if parsed.path == "/api/v1/download-folders":
             json_response(self, HTTPStatus.OK, build_download_folder_payload())
             return
@@ -1895,6 +2276,37 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path in {"/api/v1/services/register", "/api/v1/services/heartbeat"}:
+            try:
+                body = self.read_json_body()
+            except json.JSONDecodeError:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON body"})
+                return
+
+            try:
+                entry = record_service_heartbeat(body)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+
+            json_response(
+                self,
+                HTTPStatus.OK,
+                {
+                    "status": "ok",
+                    "message": "Service heartbeat recorded." if parsed.path.endswith("/heartbeat") else "Service registered.",
+                    "service": {
+                        "name": entry["service"],
+                        "hostname": entry["hostname"],
+                        "instanceId": entry["instanceId"],
+                        "baseUrl": entry["baseUrl"],
+                        "healthUrl": entry["healthUrl"],
+                        "lastSeen": entry["lastSeen"],
+                    },
+                },
+            )
+            return
+
         if parsed.path == "/api/v1/system/restart":
             if os.name != "nt":
                 json_response(
@@ -2034,7 +2446,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             json_response(self, HTTPStatus.OK, payload)
             return
 
-        if parsed.path in {"/api/v1/subtitles/download", "/api/v1/subtitles/merge"}:
+        if parsed.path in {"/api/v1/subtitles/download", "/api/v1/subtitles/merge", "/api/v1/subtitles/generate"}:
             try:
                 body = self.read_json_body()
             except json.JSONDecodeError:
@@ -2063,6 +2475,17 @@ class ApiHandler(BaseHTTPRequestHandler):
                     })
                     return
 
+                if parsed.path == "/api/v1/subtitles/generate":
+                    video_relative = body.get("videoPath") or body.get("path")
+                    video_path = resolve_download_path(video_relative)
+                    if not video_path.is_file():
+                        json_response(self, HTTPStatus.NOT_FOUND, {"error": f"Video not found: {video_relative}"})
+                        return
+                    language = (body.get("language") or "").strip() or None
+                    result = generate_subtitles_via_mac_service(video_path, language=language)
+                    json_response(self, HTTPStatus.OK, result)
+                    return
+
                 video_path = resolve_download_path(body.get("videoPath"))
                 subtitle_path = resolve_download_path(body.get("subtitlePath"))
                 if not video_path.is_file():
@@ -2081,6 +2504,12 @@ class ApiHandler(BaseHTTPRequestHandler):
 
             except ValueError as exc:
                 json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            except urllib.error.HTTPError as exc:
+                json_response(self, HTTPStatus.BAD_GATEWAY, {"error": f"Mac subtitle service returned HTTP {exc.code}."})
+                return
+            except urllib.error.URLError as exc:
+                json_response(self, HTTPStatus.BAD_GATEWAY, {"error": f"Could not reach the Mac subtitle service: {exc.reason}"})
                 return
             except FileNotFoundError as exc:
                 json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
