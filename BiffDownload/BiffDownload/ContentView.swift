@@ -54,7 +54,7 @@ struct ContentView: View {
             }
             .tag(MainTab.info)
 
-            PlaceholderTabView(title: "AI", systemImage: "sparkles")
+            AIView(connectionModel: connectionModel)
                 .tabItem {
                     Label("AI", systemImage: "sparkles")
                 }

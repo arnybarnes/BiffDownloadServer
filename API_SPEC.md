@@ -133,6 +133,160 @@ Status codes:
 - `500 Internal Server Error` if the restart process could not be launched
 - `501 Not Implemented` if restart is unavailable on the current host
 
+### `GET /api/v1/services/mac-api`
+
+Returns the current registry entry for the Mac subtitle helper service plus a live probe of its `/health` endpoint.
+
+Example response — online:
+
+```json
+{
+  "status": "ok",
+  "service": {
+    "name": "mac-api",
+    "registered": true,
+    "online": true,
+    "heartbeatFresh": true,
+    "lastSeen": "2026-05-15T22:10:00Z",
+    "lastSeenAgeSeconds": 3.2,
+    "staleAfterSeconds": 45.0,
+    "hostname": "Arnolds-Mac-mini",
+    "instanceId": "mac-api-20260515-221000",
+    "version": "1.0.0",
+    "baseUrl": "http://192.168.1.4:8800",
+    "healthUrl": "http://192.168.1.4:8800/health",
+    "port": 8800,
+    "addresses": [
+      "192.168.1.4"
+    ],
+    "meta": {
+      "role": "subtitle-generator"
+    },
+    "healthReachable": true,
+    "health": {
+      "status": "ok",
+      "service": "mac-api",
+      "version": "1.0.0"
+    },
+    "healthError": null
+  }
+}
+```
+
+Example response — nothing registered yet:
+
+```json
+{
+  "status": "degraded",
+  "service": {
+    "name": "mac-api",
+    "registered": false,
+    "online": false,
+    "heartbeatFresh": false
+  }
+}
+```
+
+Notes:
+
+- This endpoint is the stable Apple TV check for whether AI subtitle generation is available
+- `online` is based on an active probe of the registered `healthUrl` when possible
+- Heartbeats are considered stale after `45` seconds
+- `status` is `"degraded"` when the helper is missing or not healthy
+
+Status codes:
+
+- `200 OK`
+
+### `POST /api/v1/services/register`
+
+Registers a helper service on the LAN. This is primarily used by the Mac subtitle helper when it starts.
+
+Request body:
+
+```json
+{
+  "service": "mac-api",
+  "hostname": "Arnolds-Mac-mini",
+  "instanceId": "mac-api-20260515-221000",
+  "baseUrl": "http://192.168.1.4:8800",
+  "healthUrl": "http://192.168.1.4:8800/health",
+  "port": 8800,
+  "version": "1.0.0",
+  "addresses": [
+    "192.168.1.4"
+  ],
+  "meta": {
+    "role": "subtitle-generator"
+  }
+}
+```
+
+Accepted fields:
+
+- `service`: required service name, for example `"mac-api"`
+- `hostname`: required machine hostname
+- `baseUrl`: optional full helper base URL
+- `healthUrl`: optional full helper health URL
+- `port`: optional TCP port
+- `instanceId`: optional instance identifier for the running helper process
+- `version`: optional helper version string
+- `addresses`: optional list of LAN IP addresses
+- `meta`: optional object for helper-specific metadata
+
+Notes:
+
+- At least one of `baseUrl` or `healthUrl` must be provided
+- If `healthUrl` is omitted and `baseUrl` is present, the API assumes `{baseUrl}/health`
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Service registered.",
+  "service": {
+    "name": "mac-api",
+    "hostname": "Arnolds-Mac-mini",
+    "instanceId": "mac-api-20260515-221000",
+    "baseUrl": "http://192.168.1.4:8800",
+    "healthUrl": "http://192.168.1.4:8800/health",
+    "lastSeen": "2026-05-15T22:10:00Z"
+  }
+}
+```
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if required fields are missing or invalid
+
+### `POST /api/v1/services/heartbeat`
+
+Refreshes the last-seen timestamp for a registered helper service. The accepted request body is the same as `POST /api/v1/services/register`.
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Service heartbeat recorded.",
+  "service": {
+    "name": "mac-api",
+    "hostname": "Arnolds-Mac-mini",
+    "instanceId": "mac-api-20260515-221000",
+    "baseUrl": "http://192.168.1.4:8800",
+    "healthUrl": "http://192.168.1.4:8800/health",
+    "lastSeen": "2026-05-15T22:10:15Z"
+  }
+}
+```
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if required fields are missing or invalid
+
 ### `GET /api/v1/download-folders`
 
 Returns the destination folders available under the configured download root.
@@ -654,6 +808,8 @@ Status codes:
 
 Downloads an external `.srt` subtitle for a video file using OpenSubtitles (legacy XML-RPC provider). Credentials are read from `config.local.json` under `subtitles.opensubtitles`.
 
+This is the existing "download an already published subtitle" path. It is separate from `POST /api/v1/subtitles/generate`, which creates new subtitles through the Mac AI helper.
+
 Request body:
 
 ```json
@@ -727,6 +883,70 @@ Status codes:
 - `404 Not Found` if the video or subtitle file does not exist
 - `500 Internal Server Error` if ffmpeg fails or times out
 
+### `POST /api/v1/subtitles/generate`
+
+Generates a new subtitle file by sending extracted audio to the registered Mac subtitle helper, then muxes the generated subtitles into a copy of the video.
+
+Request body:
+
+```json
+{
+  "videoPath": "From-season4\\s04e01.mkv",
+  "language": "en"
+}
+```
+
+- `videoPath`: relative path of the source video inside the download root
+- `language`: optional requested transcription language. Omit or pass empty string to let the Mac helper auto-detect it
+
+Compatibility note:
+
+- `path` is also accepted as an alias for `videoPath`, but new clients should use `videoPath`
+
+Behavior:
+
+- Requires an online helper from `GET /api/v1/services/mac-api`
+- Extracts temporary mono 16 kHz WAV audio from the source video
+- Sends the audio to the Mac helper service
+- Saves the returned subtitle beside the video as `{stem}.generated.srt`
+- Writes a new output copy beside the video as `{stem}_generated_subs{ext}`
+- `.mkv` sources produce `{stem}_generated_subs.mkv`
+- `.mp4` sources also produce `{stem}_generated_subs.mkv`
+- The generated subtitle track is named `AI Generated`
+- Existing tracks are preserved while the new generated subtitle track is added
+- Other containers are rejected
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Generated subtitles and muxed them into a copy.",
+  "subtitlePath": "From-season4\\s04e01.generated.srt",
+  "outputPath": "From-season4\\s04e01_generated_subs.mkv",
+  "macService": {
+    "hostname": "Arnolds-Mac-mini",
+    "baseUrl": "http://192.168.1.4:8800",
+    "healthUrl": "http://192.168.1.4:8800/health",
+    "version": "1.0.0"
+  },
+  "transcription": {
+    "requestedLanguage": "en",
+    "detectedLanguage": "en",
+    "segmentCount": 48,
+    "model": "mlx-community/whisper-small-mlx"
+  }
+}
+```
+
+Status codes:
+
+- `200 OK`
+- `400 Bad Request` if the request is invalid, the path escapes the download root, or the container is unsupported
+- `404 Not Found` if the video file does not exist
+- `502 Bad Gateway` if the Mac helper cannot be reached or returns an HTTP error
+- `500 Internal Server Error` if local extraction, local muxing, or helper-side processing fails
+
 ## Suggested Apple TV Client Rules
 
 - Search with `GET /api/v1/search`
@@ -737,3 +957,4 @@ Status codes:
 - Keep showing status while `finalization.state` is `queued` or `in_progress`
 - Only show the final success state once `finalization.state == "completed"`
 - Only delete temp files if the user explicitly requests it by calling `POST /api/v1/downloads/{gid}/cleanup`
+- For AI-generated subtitles, check `GET /api/v1/services/mac-api` before calling `POST /api/v1/subtitles/generate`

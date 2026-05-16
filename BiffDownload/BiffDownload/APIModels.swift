@@ -226,6 +226,60 @@ struct SubtitleMergeResponse: Decodable {
     let outputPath: String?
 }
 
+struct SubtitleGenerateResponse: Decodable {
+    let status: String
+    let message: String?
+    let subtitlePath: String?
+    let outputPath: String?
+    let macService: GeneratedSubtitleMacService?
+    let transcription: GeneratedSubtitleTranscription?
+}
+
+struct GeneratedSubtitleMacService: Decodable {
+    let hostname: String?
+    let baseUrl: String?
+    let healthUrl: String?
+    let version: String?
+}
+
+struct GeneratedSubtitleTranscription: Decodable {
+    let requestedLanguage: String?
+    let detectedLanguage: String?
+    let segmentCount: Int?
+    let model: String?
+}
+
+struct MacServiceStatusResponse: Decodable {
+    let status: String
+    let service: MacServiceStatus?
+}
+
+struct MacServiceStatus: Decodable {
+    let name: String?
+    let registered: Bool?
+    let online: Bool?
+    let heartbeatFresh: Bool?
+    let lastSeen: String?
+    let lastSeenAgeSeconds: Double?
+    let staleAfterSeconds: Double?
+    let hostname: String?
+    let instanceId: String?
+    let version: String?
+    let baseUrl: String?
+    let healthUrl: String?
+    let port: Int?
+    let addresses: [String]?
+    let healthReachable: Bool?
+    let health: MacServiceHealth?
+    let healthError: String?
+}
+
+struct MacServiceHealth: Decodable {
+    let status: String?
+    let service: String?
+    let version: String?
+}
+
 // MARK: - Queue Download
 
 struct QueueDownloadResponse: Decodable {
