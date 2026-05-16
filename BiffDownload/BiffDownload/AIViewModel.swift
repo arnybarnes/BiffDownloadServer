@@ -7,6 +7,19 @@ import Combine
 import Foundation
 import os
 
+struct AIJobStageDisplay: Identifiable {
+    enum State {
+        case pending
+        case active
+        case completed
+        case failed
+    }
+
+    let id: String
+    let label: String
+    let state: State
+}
+
 @MainActor
 final class AIViewModel: ObservableObject {
     @Published private(set) var root: String?
@@ -18,6 +31,7 @@ final class AIViewModel: ObservableObject {
     @Published private(set) var isLoadingFiles = false
     @Published private(set) var isRefreshingService = false
     @Published private(set) var isGeneratingSubtitles = false
+    @Published private(set) var generateJob: SubtitleGenerateJob?
     @Published private(set) var generatedSubtitlePath: String?
     @Published private(set) var outputVideoPath: String?
     @Published private(set) var detectedLanguage: String?
@@ -29,10 +43,18 @@ final class AIViewModel: ObservableObject {
     @Published private(set) var serviceErrorMessage: String?
 
     private var apiService: APIService?
+    private var generateJobPollingTask: Task<Void, Never>?
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "BiffDownload",
         category: "AI"
     )
+    private static let generateStageDefinitions: [(id: String, label: String)] = [
+        ("extracting_audio", "Extracting audio"),
+        ("uploading_audio", "Uploading audio"),
+        ("transcribing", "Generating subtitles"),
+        ("receiving_srt", "Receiving subtitle file"),
+        ("muxing", "Merging video"),
+    ]
 
     var canGoUp: Bool {
         !currentPath.isEmpty
@@ -51,7 +73,94 @@ final class AIViewModel: ObservableObject {
     }
 
     var primaryActionTitle: String {
-        isGeneratingSubtitles ? "Generating..." : "Generate and Apply"
+        if isGeneratingSubtitles {
+            return generateJob?.stageLabel ?? "Generating..."
+        }
+        return "Generate and Apply"
+    }
+
+    var hasGenerateJob: Bool {
+        generateJob != nil
+    }
+
+    var generateJobStageLabel: String {
+        generateJob?.stageLabel ?? "Queued"
+    }
+
+    var generateJobDetail: String {
+        generateJob?.detail ?? "Preparing subtitle generation."
+    }
+
+    var generateJobProgressFraction: Double {
+        generateJob?.progressFraction ?? 0
+    }
+
+    var generateJobActiveStage: String? {
+        generateJob?.activeStage ?? generateJob?.state
+    }
+
+    var generateJobProgressPercentText: String? {
+        guard let generateJob else {
+            return nil
+        }
+        if generateJob.state == "transcribing" && generateJob.stageProgressPercent == nil {
+            return nil
+        }
+        return "\(generateJob.progressPercent ?? 0)%"
+    }
+
+    var generateJobStageProgressText: String? {
+        guard let stageProgressPercent = generateJob?.stageProgressPercent else {
+            return nil
+        }
+        return "Stage \(stageProgressPercent)%"
+    }
+
+    var generateJobElapsedText: String? {
+        guard let elapsedSeconds = generateJob?.elapsedSeconds else {
+            return nil
+        }
+        let elapsed = formatElapsedText(elapsedSeconds)
+        if generateJob?.state == "transcribing" {
+            return "AI elapsed \(elapsed)"
+        }
+        return "\(elapsed) elapsed"
+    }
+
+    var generateJobStages: [AIJobStageDisplay] {
+        let currentStage = generateJobActiveStage
+        let currentStageIndex = Self.generateStageDefinitions.firstIndex { $0.id == currentStage }
+
+        return Self.generateStageDefinitions.enumerated().map { index, stage in
+            let state: AIJobStageDisplay.State
+
+            switch generateJob?.state {
+            case "completed":
+                state = .completed
+            case "failed":
+                if let currentStageIndex, index < currentStageIndex {
+                    state = .completed
+                } else if let currentStageIndex, index == currentStageIndex {
+                    state = .failed
+                } else {
+                    state = .pending
+                }
+            default:
+                if let currentStageIndex, index < currentStageIndex {
+                    state = .completed
+                } else if let currentStageIndex, index == currentStageIndex {
+                    state = .active
+                } else {
+                    state = .pending
+                }
+            }
+
+            return AIJobStageDisplay(id: stage.id, label: stage.label, state: state)
+        }
+    }
+
+    deinit {
+        generateJobPollingTask?.cancel()
     }
 
     func configure(baseURL: URL) {
@@ -66,6 +175,7 @@ final class AIViewModel: ObservableObject {
         entries = []
         selectedVideo = nil
         hasLoaded = false
+        cancelGenerateJobPolling()
         macServiceStatus = nil
         serviceErrorMessage = nil
         clearResultState()
@@ -144,32 +254,21 @@ final class AIViewModel: ObservableObject {
 
         clearResultState()
         isGeneratingSubtitles = true
-        statusMessage = "Generating subtitles on the Mac service with automatic language detection..."
+        statusMessage = nil
         logger.info(
             "Generating subtitles videoPath=\(selectedVideo.relativePath, privacy: .public) language=<auto>"
         )
 
         do {
-            let response = try await apiService.generateSubtitle(videoPath: selectedVideo.relativePath)
-            isGeneratingSubtitles = false
-
-            generatedSubtitlePath = response.subtitlePath
-            outputVideoPath = response.outputPath
-            detectedLanguage = response.transcription?.detectedLanguage
-            segmentCount = response.transcription?.segmentCount
-            transcriptionModel = response.transcription?.model
-            statusMessage = response.message ?? "Generated subtitles and muxed a copy."
-
-            if let responseService = response.macService {
-                macServiceStatus = merge(macServiceStatus, with: responseService)
+            let response = try await apiService.startGenerateSubtitleJob(videoPath: selectedVideo.relativePath)
+            guard let job = response.job else {
+                isGeneratingSubtitles = false
+                errorMessage = "The server did not return a subtitle generation job."
+                logger.error("Subtitle generation job creation returned no job payload.")
+                return
             }
-
-            logger.info(
-                "Generate subtitles completed subtitlePath=\(response.subtitlePath ?? "<none>", privacy: .public) outputPath=\(response.outputPath ?? "<none>", privacy: .public)"
-            )
-
-            await refreshAfterGenerating(to: response.outputPath)
-            await refreshMacServiceStatus()
+            applyGenerateJob(job)
+            startPollingGenerateJob(jobID: job.id)
         } catch {
             isGeneratingSubtitles = false
             errorMessage = error.localizedDescription
@@ -182,6 +281,8 @@ final class AIViewModel: ObservableObject {
     }
 
     private func clearResultState() {
+        cancelGenerateJobPolling()
+        generateJob = nil
         errorMessage = nil
         statusMessage = nil
         generatedSubtitlePath = nil
@@ -189,6 +290,88 @@ final class AIViewModel: ObservableObject {
         detectedLanguage = nil
         segmentCount = nil
         transcriptionModel = nil
+    }
+
+    private func cancelGenerateJobPolling() {
+        generateJobPollingTask?.cancel()
+        generateJobPollingTask = nil
+    }
+
+    private func startPollingGenerateJob(jobID: String) {
+        cancelGenerateJobPolling()
+        generateJobPollingTask = Task { [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 750_000_000)
+                } catch {
+                    return
+                }
+
+                let shouldContinue = await self.pollGenerateJob(jobID: jobID)
+                if !shouldContinue {
+                    return
+                }
+            }
+        }
+    }
+
+    private func pollGenerateJob(jobID: String) async -> Bool {
+        guard let apiService else {
+            isGeneratingSubtitles = false
+            errorMessage = "Not connected to server."
+            return false
+        }
+
+        do {
+            let response = try await apiService.generateSubtitleJob(id: jobID)
+            guard let job = response.job else {
+                isGeneratingSubtitles = false
+                errorMessage = "The server returned an empty subtitle generation job payload."
+                return false
+            }
+
+            applyGenerateJob(job)
+
+            if job.isTerminal {
+                isGeneratingSubtitles = false
+                generateJobPollingTask = nil
+
+                if job.state == "completed" {
+                    statusMessage = job.message ?? "Generated subtitles and muxed a copy."
+                    errorMessage = nil
+                    await refreshAfterGenerating(to: job.outputPath)
+                } else {
+                    errorMessage = job.error ?? job.detail ?? "Subtitle generation failed."
+                    statusMessage = nil
+                }
+
+                await refreshMacServiceStatus()
+                return false
+            }
+
+            return true
+        } catch {
+            isGeneratingSubtitles = false
+            errorMessage = error.localizedDescription
+            statusMessage = nil
+            logger.error("Subtitle generation job polling failed jobID=\(jobID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    private func applyGenerateJob(_ job: SubtitleGenerateJob) {
+        generateJob = job
+        generatedSubtitlePath = job.subtitlePath
+        outputVideoPath = job.outputPath
+        detectedLanguage = job.transcription?.detectedLanguage
+        segmentCount = job.transcription?.segmentCount
+        transcriptionModel = job.transcription?.model
+
+        if let responseService = job.macService {
+            macServiceStatus = merge(macServiceStatus, with: responseService)
+        }
     }
 
     private func load(path: String) async {
@@ -278,6 +461,13 @@ final class AIViewModel: ObservableObject {
 
     private func isSamePath(_ lhs: String, _ rhs: String) -> Bool {
         normalizedPath(lhs) == normalizedPath(rhs)
+    }
+
+    private func formatElapsedText(_ elapsedSeconds: Double) -> String {
+        let rounded = max(0, Int(elapsedSeconds.rounded()))
+        let minutes = rounded / 60
+        let seconds = rounded % 60
+        return String(format: "%d:%02d", minutes, seconds)
     }
 
     private static func isVideoFile(_ name: String) -> Bool {

@@ -275,6 +275,39 @@ struct APIService {
         return try await perform(request)
     }
 
+    func startGenerateSubtitleJob(videoPath: String, language: String? = nil) async throws -> SubtitleGenerateJobResponse {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL
+        }
+        components.path = "/api/v1/subtitles/generate/jobs"
+
+        guard let url = components.url else { throw APIError.invalidURL }
+
+        let trimmedLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedLanguage = trimmedLanguage?.isEmpty == false ? trimmedLanguage : nil
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            SubtitleGenerateRequest(videoPath: videoPath, language: normalizedLanguage)
+        )
+
+        return try await perform(request)
+    }
+
+    func generateSubtitleJob(id: String) async throws -> SubtitleGenerateJobResponse {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL
+        }
+        components.path = "/api/v1/subtitles/generate/jobs/\(id)"
+
+        guard let url = components.url else { throw APIError.invalidURL }
+
+        return try await perform(URLRequest(url: url))
+    }
+
     func macServiceStatus() async throws -> MacServiceStatusResponse {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw APIError.invalidURL

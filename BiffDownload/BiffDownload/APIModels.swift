@@ -235,6 +235,39 @@ struct SubtitleGenerateResponse: Decodable {
     let transcription: GeneratedSubtitleTranscription?
 }
 
+struct SubtitleGenerateJobResponse: Decodable {
+    let status: String
+    let job: SubtitleGenerateJob?
+}
+
+struct SubtitleGenerateJob: Decodable, Identifiable {
+    let id: String
+    let state: String
+    let activeStage: String?
+    let stageLabel: String?
+    let progressPercent: Int?
+    let stageProgressPercent: Int?
+    let detail: String?
+    let message: String?
+    let videoPath: String?
+    let subtitlePath: String?
+    let outputPath: String?
+    let startedAt: String?
+    let updatedAt: String?
+    let elapsedSeconds: Double?
+    let error: String?
+    let macService: GeneratedSubtitleMacService?
+    let transcription: GeneratedSubtitleTranscription?
+
+    var progressFraction: Double {
+        min(max(Double(progressPercent ?? 0) / 100.0, 0), 1)
+    }
+
+    var isTerminal: Bool {
+        state == "completed" || state == "failed"
+    }
+}
+
 struct GeneratedSubtitleMacService: Decodable {
     let hostname: String?
     let baseUrl: String?

@@ -12,28 +12,64 @@ Improve the Apple TV AI subtitle flow so the user can see these stages clearly:
 
 The current flow is functional but too opaque. `POST /api/v1/subtitles/generate` blocks until everything is finished, so the Apple TV app can only show a generic loading state.
 
+## Current Execution Status
+
+Implemented:
+
+- Phase 1 async job endpoints on the Windows API
+- Apple TV polling UI for AI subtitle jobs
+- Weighted overall job progress
+- Real extraction progress from `ffmpeg`
+- Real upload progress from bytes sent
+- Real mux progress when `mkvmerge` emits progress lines
+- Apple TV stage timeline showing completed, active, pending, and failed stages
+- `transcribing` intentionally uses elapsed time on Apple TV instead of a fake percentage
+
+Deferred optional work:
+
+- True transcription progress from the Mac helper during the `transcribing` stage
+- A Mac-side job API or chunked transcription flow if we later decide elapsed time is not sufficient
+
 ## Current State
 
 ### Apple TV app
 
-- The AI tab already lets the user pick a video and trigger subtitle generation.
-- The app currently waits for one final response from `POST /api/v1/subtitles/generate`.
-- There is no stage-by-stage feedback yet.
+- The AI tab lets the user pick a video and trigger subtitle generation.
+- The app uses the async job flow instead of waiting on one blocking request.
+- The app shows a progress card with:
+  - current stage
+  - weighted overall progress
+  - stage detail text
+  - elapsed time
+  - a stage timeline
+- During `transcribing`, the app deliberately shows elapsed time instead of a made-up percentage.
 
 ### Windows API
 
-- The Windows API currently performs the whole generate flow inside one request:
+- The Windows API now supports:
+  - `POST /api/v1/subtitles/generate/jobs`
+  - `GET /api/v1/subtitles/generate/jobs/{jobId}`
+- The Windows API runs the full subtitle job in a background thread:
   - extract audio with `ffmpeg`
   - send audio to the Mac helper
   - receive generated SRT text
   - save `{stem}.generated.srt`
   - mux `{stem}_generated_subs{ext}`
-- This makes fine-grained progress hard to expose to the Apple TV client.
+- The job payload exposes:
+  - `state`
+  - `activeStage`
+  - `progressPercent`
+  - `stageProgressPercent`
+  - `detail`
+  - timestamps, error state, and result paths
+- Real measured progress is available for extraction, upload, and muxing.
+- `transcribing` remains a coarse in-progress state because the Mac helper is still one-shot.
 
 ### Mac helper
 
 - The Mac helper currently accepts one audio upload and returns one final JSON response.
 - It does not expose job progress yet.
+- For this pass, that is acceptable because the Apple TV app shows elapsed time while the helper is working.
 
 ## Recommended Architecture
 
@@ -211,22 +247,16 @@ Implementation note:
 
 This is the hardest stage.
 
-Best-case option:
+Current decision:
 
-- MLX Whisper exposes a callable API or callback with progress we can observe directly
+- keep the Mac helper one-shot for now
+- show `transcribing` as an active stage with elapsed time on Apple TV
+- do not invent a percentage for this stage
 
-Fallback option:
+Optional future upgrades:
 
-- split the extracted audio into time chunks
-- transcribe chunk-by-chunk on the Mac helper
-- update progress from completed audio duration / total audio duration
-- merge and re-time SRT segments at the end
-
-Recommendation:
-
-- build the job flow first with coarse `transcribing` status
-- then evaluate whether MLX Whisper can provide real progress
-- if not, move to chunk-based transcription for deterministic progress
+- if MLX Whisper exposes usable progress, surface it directly
+- otherwise split the extracted audio into chunks and report progress by processed duration
 
 #### `.srt` receiving
 
@@ -261,7 +291,11 @@ Recommended progress source:
 
 ### Minimum version
 
-For phase 1, the Mac helper does not need a new endpoint if the Windows API keeps sending one upload and waiting for one final result.
+This is the current implementation.
+
+- The Windows API uploads one extracted audio file.
+- The Mac helper returns one final JSON response with SRT text.
+- No Mac-side job API is required for the current user experience.
 
 ### Better version
 
@@ -277,10 +311,10 @@ Benefits:
 - the Windows API can poll the Mac instead of blocking
 - the Apple TV user gets a more believable `Generating subtitles` stage
 
-Recommendation:
+Status:
 
-- do not require this for phase 1
-- likely require this for accurate phase 2 or phase 3 progress
+- deferred
+- not required for the current pass because elapsed time is the accepted fallback for `transcribing`
 
 ## Apple TV App Work
 
@@ -344,11 +378,17 @@ Suggested starting weights:
 
 This will feel more honest than a five-step equal bar.
 
+Important rule:
+
+- `transcribing` should not display a fake live percentage on Apple TV when the backend cannot measure it
+- during that stage, the UI should show elapsed time and the current stage label instead
+
 ### Stage detail examples
 
 - `Extracting audio: 00:42 of 02:31`
 - `Uploading audio: 8.1 MB of 13.0 MB`
 - `Generating subtitles: processing audio on Mac`
+- `AI elapsed 1:32`
 - `Receiving subtitle file: finalizing SRT`
 - `Merging into new video: 61%`
 
@@ -356,7 +396,7 @@ This will feel more honest than a five-step equal bar.
 
 ### Phase 1
 
-Add async jobs and coarse stage changes.
+Status: complete
 
 Deliverables:
 
@@ -371,7 +411,7 @@ Tradeoff:
 
 ### Phase 2
 
-Add real progress for extraction, upload, and muxing.
+Status: complete
 
 Deliverables:
 
@@ -381,12 +421,12 @@ Deliverables:
 
 ### Phase 3
 
-Improve transcription progress.
+Status: deferred optional work
 
-Deliverables:
+Chosen fallback:
 
-- direct MLX progress if available
-- otherwise chunk-based transcription progress on the Mac helper
+- keep `transcribing` elapsed-time-based on Apple TV
+- revisit only if we later decide true AI progress is worth the added backend complexity
 
 ## Non-Goals
 
@@ -399,6 +439,8 @@ For this pass, do not:
 
 ## Acceptance Criteria
 
+Status: met for this pass
+
 The work is done when:
 
 1. The Apple TV app shows at least the five requested stages during AI subtitle generation
@@ -407,12 +449,8 @@ The work is done when:
 4. Existing subtitle download/merge flows still work unchanged
 5. Existing `POST /api/v1/subtitles/generate` clients continue to function
 
-## Recommended Execution Order
+## Optional Future Work
 
-1. Build Windows API async job endpoints
-2. Wire Apple TV polling UI to the new job model
-3. Add extraction progress
-4. Add upload progress
-5. Add mux progress
-6. Evaluate MLX transcription progress capability
-7. If needed, redesign Mac helper transcription as chunked or job-based
+1. Check whether a future MLX Whisper update exposes usable progress callbacks.
+2. If not, evaluate chunked transcription on the Mac helper only if elapsed time proves insufficient in real use.
+3. Leave the current async job model and Apple TV stage UI in place either way.

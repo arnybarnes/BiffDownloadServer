@@ -115,6 +115,10 @@ struct AIView: View {
         VStack(alignment: .leading, spacing: 20) {
             macServiceCard
 
+            if viewModel.hasGenerateJob {
+                generateJobCard
+            }
+
             Text("Uses automatic language detection on the Mac helper, creates a `.generated.srt` beside the selected video, and muxes a new subtitled copy on the download server.")
                 .font(.callout)
                 .foregroundStyle(Color.white.opacity(0.60))
@@ -145,6 +149,76 @@ struct AIView: View {
         }
         .padding(24)
         .background(AppCardBackground())
+    }
+
+    private var generateJobCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: generateJobIconName)
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(generateJobTint)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(viewModel.generateJobStageLabel)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white)
+
+                    Text(viewModel.generateJobDetail)
+                        .font(.callout)
+                        .foregroundStyle(Color.white.opacity(0.72))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            ProgressView(value: viewModel.generateJobProgressFraction)
+                .tint(generateJobTint)
+
+            HStack(spacing: 16) {
+                if let progressPercentText = viewModel.generateJobProgressPercentText {
+                    Text(progressPercentText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.78))
+                }
+
+                if let stageProgressText = viewModel.generateJobStageProgressText {
+                    Text(stageProgressText)
+                        .font(.caption)
+                        .foregroundStyle(Color.white.opacity(0.62))
+                }
+
+                if let elapsedText = viewModel.generateJobElapsedText {
+                    Text(elapsedText)
+                        .font(.caption)
+                        .foregroundStyle(Color.white.opacity(0.62))
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(viewModel.generateJobStages) { stage in
+                    HStack(spacing: 10) {
+                        Image(systemName: stageIconName(stage.state))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(stageColor(stage.state))
+                            .frame(width: 18)
+
+                        Text(stage.label)
+                            .font(.caption.weight(stage.state == .active ? .semibold : .regular))
+                            .foregroundStyle(stageTextColor(stage.state))
+
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+        .padding(22)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color.white.opacity(0.06))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(generateJobTint.opacity(0.30), lineWidth: 1)
+                }
+        )
     }
 
     private var macServiceCard: some View {
@@ -380,6 +454,46 @@ struct AIView: View {
         return Color.white.opacity(0.55)
     }
 
+    private var generateJobTint: Color {
+        guard let job = viewModel.generateJob else {
+            return .white.opacity(0.6)
+        }
+        switch job.state {
+        case "completed":
+            return .green
+        case "failed":
+            return Color(red: 1.0, green: 0.45, blue: 0.40)
+        case "uploading_audio", "transcribing", "receiving_srt", "muxing":
+            return .orange
+        default:
+            return .white.opacity(0.8)
+        }
+    }
+
+    private var generateJobIconName: String {
+        guard let job = viewModel.generateJob else {
+            return "sparkles"
+        }
+        switch job.state {
+        case "completed":
+            return "checkmark.circle.fill"
+        case "failed":
+            return "xmark.octagon.fill"
+        case "extracting_audio":
+            return "waveform"
+        case "uploading_audio":
+            return "arrow.up.circle.fill"
+        case "transcribing":
+            return "sparkles"
+        case "receiving_srt":
+            return "text.badge.checkmark"
+        case "muxing":
+            return "film.stack"
+        default:
+            return "clock"
+        }
+    }
+
     private var macStatusTitle: String {
         if viewModel.isRefreshingService && viewModel.macServiceStatus == nil {
             return "Checking Mac Service"
@@ -456,6 +570,43 @@ struct AIView: View {
             await viewModel.loadRoot()
         }
         await viewModel.refreshMacServiceStatus()
+    }
+
+    private func stageIconName(_ state: AIJobStageDisplay.State) -> String {
+        switch state {
+        case .completed:
+            return "checkmark.circle.fill"
+        case .active:
+            return "clock.badge.checkmark.fill"
+        case .failed:
+            return "xmark.octagon.fill"
+        case .pending:
+            return "circle"
+        }
+    }
+
+    private func stageColor(_ state: AIJobStageDisplay.State) -> Color {
+        switch state {
+        case .completed:
+            return .green
+        case .active:
+            return generateJobTint
+        case .failed:
+            return Color(red: 1.0, green: 0.45, blue: 0.40)
+        case .pending:
+            return Color.white.opacity(0.32)
+        }
+    }
+
+    private func stageTextColor(_ state: AIJobStageDisplay.State) -> Color {
+        switch state {
+        case .completed, .active:
+            return .white.opacity(0.88)
+        case .failed:
+            return Color(red: 1.0, green: 0.78, blue: 0.76)
+        case .pending:
+            return .white.opacity(0.54)
+        }
     }
 }
 
