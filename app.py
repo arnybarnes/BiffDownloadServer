@@ -1638,6 +1638,22 @@ def get_download_status(gid: str) -> dict[str, Any]:
     return build_download_status_payload(root_result, effective_result, followed_by, request, primary_path)
 
 
+def build_disk_space_payload() -> dict[str, Any]:
+    path = get_download_root()
+    usage = shutil.disk_usage(path)
+    percent_used = round(usage.used / usage.total * 100, 1) if usage.total > 0 else 0.0
+    return {
+        "status": "ok",
+        "disk": {
+            "path": str(path),
+            "totalBytes": usage.total,
+            "usedBytes": usage.used,
+            "freeBytes": usage.free,
+            "percentUsed": percent_used,
+        },
+    }
+
+
 def build_api_health_payload() -> dict[str, Any]:
     config = get_provider_config()
     provider = get_provider_reachability(config)
@@ -1831,6 +1847,10 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/v1/download-folders":
             json_response(self, HTTPStatus.OK, build_download_folder_payload())
+            return
+
+        if parsed.path == "/api/v1/disk":
+            json_response(self, HTTPStatus.OK, build_disk_space_payload())
             return
 
         if parsed.path in {"/api/search", "/api/v1/search"}:
